@@ -1,0 +1,180 @@
+import { Elysia, t } from 'elysia';
+import { getValidTransfer, getFilesByTransferId, getFileById, incrementTransferDownloadCount, verifyTransferPassword } from '../services/file.service';
+import { getFile } from '../services/local.service';
+import { checkRateLimit, rateLimiters } from '../services/ratelimit.service';
+
+// nanoid validation pattern (21 chars, URL-safe alphabet)
+const NANOID_PATTERN = /^[A-Za-z0-9_-]{21}$/;
+function isValidNanoId(id: string): boolean {
+  return NANOID_PATTERN.test(id);
+}
+
+export const downloadRoutes = new Elysia({ prefix: '/api/download' })
+  // Get transfer metadata with all files
+  .get('/transfer/:id', async ({ params, request, set }) => {
+    // Validate ID format first (prevents path traversal)
+    if (!isValidNanoId(params.id)) {
+      set.status = 404;
+      return { error: 'Transfer not found or has expired' };
+    }
+
+    const ip = request.headers.get('x-forwarded-for') ?? 'unknown';
+
+    const rateLimit = await checkRateLimit(ip, rateLimiters.download);
+    if (!rateLimit.allowed) {
+      set.status = 429;
+      set.headers['Retry-After'] = String(rateLimit.resetIn);
+      return { error: 'Rate limit exceeded. Try again later.' };
+    }
+
+    const transfer = await getValidTransfer(params.id);
+
+    if (!transfer) {
+      set.status = 404;
+      return { error: 'Transfer not found or has expired' };
+    }
+
+    // Get all files for this transfer
+    const files = await getFilesByTransferId(transfer.id);
+
+    // If password protected, return limited metadata
+    if (transfer.passwordHash) {
+      return {
+        id: transfer.id,
+        expiresAt: transfer.expiresAt,
+        passwordRequired: true,
+        fileCount: files.length
+      };
+    }
+
+    // Increment download count
+    await incrementTransferDownloadCount(transfer.id);
+
+    return {
+      id: transfer.id,
+      expiresAt: transfer.expiresAt,
+      passwordRequired: false,
+      files: files.map(file => ({
+        id: file.id,
+        encryptedName: file.encryptedName,
+        encryptedNameIv: file.encryptedNameIv,
+        fileIv: file.fileIv,
+        size: file.size,
+        mimeType: file.mimeType
+      }))
+    };
+  }, {
+    params: t.Object({
+      id: t.String()
+    })
+  })
+
+  // Verify password and get full metadata
+  .post('/transfer/:id/verify', async ({ params, body, request, set }) => {
+    // Validate ID format first
+    if (!isValidNanoId(params.id)) {
+      set.status = 404;
+      return { error: 'Transfer not found or has expired' };
+    }
+
+    const ip = request.headers.get('x-forwarded-for') ?? 'unknown';
+
+    const rateLimit = await checkRateLimit(ip, rateLimiters.password);
+    if (!rateLimit.allowed) {
+      set.status = 429;
+      set.headers['Retry-After'] = String(rateLimit.resetIn);
+      return { error: 'Too many password attempts. Try again later.' };
+    }
+
+    const transfer = await getValidTransfer(params.id);
+
+    if (!transfer) {
+      set.status = 404;
+      return { error: 'Transfer not found or has expired' };
+    }
+
+    if (!transfer.passwordHash) {
+      set.status = 400;
+      return { error: 'Transfer is not password protected' };
+    }
+
+    const isValid = await verifyTransferPassword(params.id, body.password);
+
+    if (!isValid) {
+      set.status = 401;
+      return { error: 'Incorrect password' };
+    }
+
+    // Get all files for this transfer
+    const files = await getFilesByTransferId(transfer.id);
+
+    // Increment download count
+    await incrementTransferDownloadCount(transfer.id);
+
+    return {
+      id: transfer.id,
+      expiresAt: transfer.expiresAt,
+      passwordRequired: false,
+      files: files.map(file => ({
+        id: file.id,
+        encryptedName: file.encryptedName,
+        encryptedNameIv: file.encryptedNameIv,
+        fileIv: file.fileIv,
+        size: file.size,
+        mimeType: file.mimeType
+      }))
+    };
+  }, {
+    params: t.Object({
+      id: t.String({ minLength: 21, maxLength: 21 })
+    }),
+    body: t.Object({
+      password: t.String({ maxLength: 256 })
+    })
+  })
+
+  // Get file content
+  .get('/file/:id', async ({ params, request, set }) => {
+    // Validate ID format first
+    if (!isValidNanoId(params.id)) {
+      set.status = 404;
+      return { error: 'File not found' };
+    }
+
+    const ip = request.headers.get('x-forwarded-for') ?? 'unknown';
+
+    const rateLimit = await checkRateLimit(ip, rateLimiters.download);
+    if (!rateLimit.allowed) {
+      set.status = 429;
+      set.headers['Retry-After'] = String(rateLimit.resetIn);
+      return { error: 'Rate limit exceeded. Try again later.' };
+    }
+
+    const file = await getFileById(params.id);
+
+    if (!file) {
+      set.status = 404;
+      return { error: 'File not found' };
+    }
+
+    // Verify the transfer is still valid
+    const transfer = await getValidTransfer(file.transferId);
+    if (!transfer) {
+      set.status = 404;
+      return { error: 'Transfer has expired' };
+    }
+
+    try {
+      const fileBuffer = await getFile(file.r2Key);
+      set.headers['Content-Type'] = 'application/octet-stream';
+      set.headers['Content-Length'] = String(fileBuffer.length);
+      return fileBuffer;
+    } catch (err) {
+      set.status = 404;
+      return { error: 'File not found' };
+    }
+  }, {
+    params: t.Object({
+      id: t.String()
+    })
+  });
