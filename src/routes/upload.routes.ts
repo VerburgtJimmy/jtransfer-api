@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { createTransfer, createFile } from '../services/file.service';
-import { saveFile } from '../services/local.service';
+import { getPresignedUploadUrl } from '../services/r2.service';
 import { checkRateLimit, rateLimiters } from '../services/ratelimit.service';
 import { env } from '../config/env';
 
@@ -51,70 +51,61 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
     })
   })
 
-  // Add a file to a transfer (direct upload via FormData)
-  .post('/add-file', async ({ request, set }) => {
-    try {
-      const ip = request.headers.get('x-forwarded-for') ?? 'unknown';
+  // Request a presigned URL for direct upload to R2
+  .post('/request-upload-url', async ({ body, request, set }) => {
+    const ip = request.headers.get('x-forwarded-for') ?? 'unknown';
 
-      const rateLimit = await checkRateLimit(ip, rateLimiters.upload);
-      if (!rateLimit.allowed) {
-        set.status = 429;
-        set.headers['Retry-After'] = String(rateLimit.resetIn);
-        return { error: 'Rate limit exceeded. Try again later.' };
-      }
-
-      // Parse FormData
-      const formData = await request.formData();
-      const transferId = formData.get('transferId') as string;
-      const contentType = formData.get('contentType') as string;
-      const encryptedName = formData.get('encryptedName') as string;
-      const encryptedNameIv = formData.get('encryptedNameIv') as string;
-      const fileIv = formData.get('fileIv') as string;
-      const fileBlob = formData.get('file') as Blob;
-
-      if (!transferId || !encryptedName || !encryptedNameIv || !fileIv || !fileBlob) {
-        set.status = 400;
-        return { error: 'Missing required fields' };
-      }
-
-      // Validate transferId format to prevent path traversal
-      if (!isValidNanoId(transferId)) {
-        set.status = 400;
-        return { error: 'Invalid transfer ID' };
-      }
-
-      // Convert Blob to Buffer
-      const arrayBuffer = await fileBlob.arrayBuffer();
-      const fileBuffer = Buffer.from(arrayBuffer);
-      const size = fileBuffer.length;
-
-      // Validate file size
-      if (size > env.MAX_FILE_SIZE) {
-        set.status = 400;
-        return { error: `File too large. Maximum size is ${env.MAX_FILE_SIZE / (1024 * 1024)}MB` };
-      }
-
-      // Create file record
-      const file = await createFile({
-        transferId,
-        encryptedName,
-        encryptedNameIv,
-        fileIv,
-        size,
-        mimeType: contentType || 'application/octet-stream'
-      });
-
-      // Save file to local storage
-      await saveFile(file.r2Key, fileBuffer);
-
-      return {
-        fileId: file.id
-      };
-    } catch (err) {
-      console.error('Upload error:', err);
-      set.status = 500;
-      return { error: err instanceof Error ? err.message : 'Upload failed' };
+    const rateLimit = await checkRateLimit(ip, rateLimiters.upload);
+    if (!rateLimit.allowed) {
+      set.status = 429;
+      set.headers['Retry-After'] = String(rateLimit.resetIn);
+      return { error: 'Rate limit exceeded. Try again later.' };
     }
+
+    const { transferId, contentType, encryptedName, encryptedNameIv, fileIv, size } = body;
+
+    // Validate transferId format to prevent path traversal
+    if (!isValidNanoId(transferId)) {
+      set.status = 400;
+      return { error: 'Invalid transfer ID' };
+    }
+
+    // Validate file size
+    if (size > env.MAX_FILE_SIZE) {
+      set.status = 400;
+      return { error: `File too large. Maximum size is ${env.MAX_FILE_SIZE / (1024 * 1024)}MB` };
+    }
+
+    // Create file record in database
+    const file = await createFile({
+      transferId,
+      encryptedName,
+      encryptedNameIv,
+      fileIv,
+      size,
+      mimeType: contentType || 'application/octet-stream'
+    });
+
+    // Generate presigned upload URL
+    const presigned = await getPresignedUploadUrl(
+      file.r2Key,
+      'application/octet-stream' // Always octet-stream since content is encrypted
+    );
+
+    return {
+      fileId: file.id,
+      uploadUrl: presigned.url,
+      expiresAt: presigned.expiresAt.toISOString()
+    };
+  }, {
+    body: t.Object({
+      transferId: t.String({ minLength: 21, maxLength: 21 }),
+      contentType: t.String(),
+      encryptedName: t.String(),
+      encryptedNameIv: t.String(),
+      fileIv: t.String(),
+      size: t.Number()
+    })
   })
 
   // Complete the transfer (called after all files are uploaded)

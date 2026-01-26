@@ -37,7 +37,7 @@ const app = new Elysia()
   .use(validateRoutes)
   .listen({
     port: env.PORT,
-    maxRequestBodySize: 1024 * 1024 * 1024 * 2, // 2GB to account for encryption overhead
+    maxRequestBodySize: 1024 * 1024 * 10, // 10MB - only for metadata requests, files go directly to R2
   });
 
 // Start the cleanup job for expired files

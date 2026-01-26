@@ -15,5 +15,10 @@ export const env = {
     getEnv("MAX_FILE_SIZE", String(1024 * 1024 * 1024)),
     10
   ), // 1GB default
-  LOCAL_STORAGE_PATH: getEnv("LOCAL_STORAGE_PATH", "./uploads"),
+
+  // Cloudflare R2 configuration
+  R2_ENDPOINT: getEnv("R2_ENDPOINT"),
+  R2_ACCESS_KEY_ID: getEnv("R2_ACCESS_KEY_ID"),
+  R2_SECRET_ACCESS_KEY: getEnv("R2_SECRET_ACCESS_KEY"),
+  R2_BUCKET_NAME: getEnv("R2_BUCKET_NAME"),
 };

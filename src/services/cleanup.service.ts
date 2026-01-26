@@ -1,5 +1,5 @@
 import { getExpiredTransfers, getFilesForTransfer, markTransferAsDeleted, markFileAsDeleted } from './file.service';
-import { deleteFile } from './local.service';
+import { deleteFromR2 } from './r2.service';
 
 export async function cleanupExpiredTransfers(): Promise<number> {
   const expiredTransfers = await getExpiredTransfers();
@@ -10,10 +10,10 @@ export async function cleanupExpiredTransfers(): Promise<number> {
       // Get all files for this transfer
       const files = await getFilesForTransfer(transfer.id);
 
-      // Delete each file from storage
+      // Delete each file from R2 storage
       for (const file of files) {
         try {
-          await deleteFile(file.r2Key);
+          await deleteFromR2(file.r2Key);
           await markFileAsDeleted(file.id);
         } catch (error) {
           console.error(`Failed to delete file ${file.id}:`, error);

@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { getValidTransfer, getFilesByTransferId, getFileById, incrementTransferDownloadCount, verifyTransferPassword } from '../services/file.service';
-import { getFile } from '../services/local.service';
+import { getPresignedDownloadUrl } from '../services/r2.service';
 import { checkRateLimit, rateLimiters } from '../services/ratelimit.service';
 
 // nanoid validation pattern (21 chars, URL-safe alphabet)
@@ -133,8 +133,8 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
     })
   })
 
-  // Get file content
-  .get('/file/:id', async ({ params, request, set }) => {
+  // Get presigned download URL for a file
+  .get('/file/:id/url', async ({ params, request, set }) => {
     // Validate ID format first
     if (!isValidNanoId(params.id)) {
       set.status = 404;
@@ -164,15 +164,14 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       return { error: 'Transfer has expired' };
     }
 
-    try {
-      const fileBuffer = await getFile(file.r2Key);
-      set.headers['Content-Type'] = 'application/octet-stream';
-      set.headers['Content-Length'] = String(fileBuffer.length);
-      return fileBuffer;
-    } catch (err) {
-      set.status = 404;
-      return { error: 'File not found' };
-    }
+    // Generate presigned download URL
+    const presigned = await getPresignedDownloadUrl(file.r2Key);
+
+    return {
+      downloadUrl: presigned.url,
+      expiresAt: presigned.expiresAt.toISOString(),
+      size: file.size
+    };
   }, {
     params: t.Object({
       id: t.String()
