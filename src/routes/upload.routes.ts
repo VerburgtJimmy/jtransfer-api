@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { createTransfer, createFile } from '../services/file.service';
 import { getPresignedUploadUrl } from '../services/r2.service';
-import { checkRateLimit, rateLimiters } from '../services/ratelimit.service';
+import { checkRateLimit, checkVolumeLimit, rateLimiters } from '../services/ratelimit.service';
 import { env } from '../config/env';
 
 // nanoid validation pattern (21 chars, URL-safe alphabet)
@@ -17,11 +17,20 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
   .post('/create-transfer', async ({ body, request, set }) => {
     const ip = request.headers.get('x-forwarded-for') ?? 'unknown';
 
+    // Per-minute rate limit
     const rateLimit = await checkRateLimit(ip, rateLimiters.upload);
     if (!rateLimit.allowed) {
       set.status = 429;
       set.headers['Retry-After'] = String(rateLimit.resetIn);
       return { error: 'Rate limit exceeded. Try again later.' };
+    }
+
+    // Daily transfer limit
+    const dailyLimit = await checkRateLimit(ip, rateLimiters.dailyTransfers);
+    if (!dailyLimit.allowed) {
+      set.status = 429;
+      set.headers['Retry-After'] = String(dailyLimit.resetIn);
+      return { error: `Daily limit reached. You can create ${rateLimiters.dailyTransfers.maxRequests} transfers per day.` };
     }
 
     const { expiresInDays, password } = body;
@@ -74,6 +83,17 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
     if (size > env.MAX_FILE_SIZE) {
       set.status = 400;
       return { error: `File too large. Maximum size is ${env.MAX_FILE_SIZE / (1024 * 1024)}MB` };
+    }
+
+    // Monthly upload volume limit per IP
+    const volumeLimit = await checkVolumeLimit(ip, {
+      ...rateLimiters.monthlyUploadVolume,
+      increment: size,
+    });
+    if (!volumeLimit.allowed) {
+      set.status = 429;
+      set.headers['Retry-After'] = String(volumeLimit.resetIn);
+      return { error: 'Monthly upload limit reached. Please try again later.' };
     }
 
     // Create file record in database

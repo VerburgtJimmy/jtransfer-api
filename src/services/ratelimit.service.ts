@@ -46,6 +46,7 @@ function getRedis(): Redis | null {
 
 // In-memory fallback for development or when Redis is unavailable
 const memoryLimits = new Map<string, { count: number; resetAt: number }>();
+const memoryCounters = new Map<string, { value: number; resetAt: number }>();
 
 // Clean up old entries periodically (every 5 minutes)
 setInterval(() => {
@@ -53,6 +54,11 @@ setInterval(() => {
   for (const [key, value] of memoryLimits.entries()) {
     if (now > value.resetAt) {
       memoryLimits.delete(key);
+    }
+  }
+  for (const [key, value] of memoryCounters.entries()) {
+    if (now > value.resetAt) {
+      memoryCounters.delete(key);
     }
   }
 }, 5 * 60 * 1000);
@@ -174,9 +180,117 @@ function checkMemoryRateLimit(
   };
 }
 
+/**
+ * Increment a counter and check if it exceeds the limit
+ * Used for volume-based limits (e.g., daily upload bytes)
+ */
+export async function checkVolumeLimit(
+  identifier: string,
+  config: RateLimitConfig & { increment: number }
+): Promise<RateLimitResult> {
+  const key = `volume:${config.prefix}:${identifier}`;
+  const redisClient = getRedis();
+
+  if (redisClient && redisAvailable) {
+    return checkRedisVolumeLimit(redisClient, key, config);
+  }
+
+  return checkMemoryVolumeLimit(key, config);
+}
+
+async function checkRedisVolumeLimit(
+  redis: Redis,
+  key: string,
+  config: RateLimitConfig & { increment: number }
+): Promise<RateLimitResult> {
+  try {
+    // Get current value
+    const current = await redis.get(key);
+    const currentValue = current ? parseInt(current, 10) : 0;
+
+    // Check if adding increment would exceed limit
+    if (currentValue + config.increment > config.maxRequests) {
+      const ttl = await redis.ttl(key);
+      return {
+        allowed: false,
+        remaining: Math.max(0, config.maxRequests - currentValue),
+        resetIn: ttl > 0 ? ttl : config.windowSeconds,
+      };
+    }
+
+    // Increment the counter
+    const multi = redis.multi();
+    multi.incrby(key, config.increment);
+    multi.expire(key, config.windowSeconds);
+    await multi.exec();
+
+    return {
+      allowed: true,
+      remaining: Math.max(0, config.maxRequests - currentValue - config.increment),
+      resetIn: config.windowSeconds,
+    };
+  } catch (err) {
+    console.warn('[RateLimit] Redis error in volume check:', err);
+    return checkMemoryVolumeLimit(key, config);
+  }
+}
+
+function checkMemoryVolumeLimit(
+  key: string,
+  config: RateLimitConfig & { increment: number }
+): RateLimitResult {
+  const now = Date.now();
+  const windowMs = config.windowSeconds * 1000;
+  const counter = memoryCounters.get(key);
+
+  if (!counter || now > counter.resetAt) {
+    // New window
+    if (config.increment > config.maxRequests) {
+      return {
+        allowed: false,
+        remaining: config.maxRequests,
+        resetIn: config.windowSeconds,
+      };
+    }
+    memoryCounters.set(key, { value: config.increment, resetAt: now + windowMs });
+    return {
+      allowed: true,
+      remaining: config.maxRequests - config.increment,
+      resetIn: config.windowSeconds,
+    };
+  }
+
+  // Check if adding increment would exceed limit
+  if (counter.value + config.increment > config.maxRequests) {
+    return {
+      allowed: false,
+      remaining: Math.max(0, config.maxRequests - counter.value),
+      resetIn: Math.ceil((counter.resetAt - now) / 1000),
+    };
+  }
+
+  counter.value += config.increment;
+  return {
+    allowed: true,
+    remaining: Math.max(0, config.maxRequests - counter.value),
+    resetIn: Math.ceil((counter.resetAt - now) / 1000),
+  };
+}
+
 // Pre-configured rate limiters
+const DAY_SECONDS = 24 * 60 * 60;
+const MONTH_SECONDS = 30 * DAY_SECONDS;
+
 export const rateLimiters = {
-  upload: { prefix: 'upload', windowSeconds: 60, maxRequests: 10 },
-  download: { prefix: 'download', windowSeconds: 60, maxRequests: 30 },
+  // Per-minute limits
+  upload: { prefix: 'upload', windowSeconds: 60, maxRequests: env.RATE_LIMIT_UPLOADS_PER_MINUTE },
+  download: { prefix: 'download', windowSeconds: 60, maxRequests: env.RATE_LIMIT_DOWNLOADS_PER_MINUTE },
   password: { prefix: 'password', windowSeconds: 60, maxRequests: 5 },
+
+  // Daily limits
+  dailyTransfers: { prefix: 'daily-transfers', windowSeconds: DAY_SECONDS, maxRequests: env.RATE_LIMIT_DAILY_TRANSFERS },
+  dailyDownloads: { prefix: 'daily-downloads', windowSeconds: DAY_SECONDS, maxRequests: env.RATE_LIMIT_DAILY_DOWNLOADS },
+
+  // Monthly volume limit (value is in bytes)
+  monthlyUploadVolume: { prefix: 'monthly-upload-volume', windowSeconds: MONTH_SECONDS, maxRequests: env.RATE_LIMIT_MONTHLY_UPLOAD_GB },
 } as const;

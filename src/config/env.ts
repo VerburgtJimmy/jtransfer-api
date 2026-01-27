@@ -6,6 +6,8 @@ function getEnv(key: string, defaultValue?: string): string {
   return value;
 }
 
+const GB = 1024 * 1024 * 1024;
+
 export const env = {
   DATABASE_URL: getEnv("DATABASE_URL"),
   REDIS_URL: process.env.REDIS_URL, // Optional - falls back to in-memory if not set
@@ -21,4 +23,11 @@ export const env = {
   R2_ACCESS_KEY_ID: getEnv("R2_ACCESS_KEY_ID"),
   R2_SECRET_ACCESS_KEY: getEnv("R2_SECRET_ACCESS_KEY"),
   R2_BUCKET_NAME: getEnv("R2_BUCKET_NAME"),
+
+  // Rate limits (configurable)
+  RATE_LIMIT_UPLOADS_PER_MINUTE: parseInt(getEnv("RATE_LIMIT_UPLOADS_PER_MINUTE", "5"), 10),
+  RATE_LIMIT_DOWNLOADS_PER_MINUTE: parseInt(getEnv("RATE_LIMIT_DOWNLOADS_PER_MINUTE", "20"), 10),
+  RATE_LIMIT_DAILY_TRANSFERS: parseInt(getEnv("RATE_LIMIT_DAILY_TRANSFERS", "20"), 10),
+  RATE_LIMIT_DAILY_DOWNLOADS: parseInt(getEnv("RATE_LIMIT_DAILY_DOWNLOADS", "200"), 10),
+  RATE_LIMIT_MONTHLY_UPLOAD_GB: parseInt(getEnv("RATE_LIMIT_MONTHLY_UPLOAD_GB", "2"), 10) * GB,
 };

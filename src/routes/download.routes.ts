@@ -143,11 +143,20 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
 
     const ip = request.headers.get('x-forwarded-for') ?? 'unknown';
 
+    // Per-minute rate limit
     const rateLimit = await checkRateLimit(ip, rateLimiters.download);
     if (!rateLimit.allowed) {
       set.status = 429;
       set.headers['Retry-After'] = String(rateLimit.resetIn);
       return { error: 'Rate limit exceeded. Try again later.' };
+    }
+
+    // Daily download limit
+    const dailyLimit = await checkRateLimit(ip, rateLimiters.dailyDownloads);
+    if (!dailyLimit.allowed) {
+      set.status = 429;
+      set.headers['Retry-After'] = String(dailyLimit.resetIn);
+      return { error: `Daily download limit reached. You can download ${rateLimiters.dailyDownloads.maxRequests} files per day.` };
     }
 
     const file = await getFileById(params.id);
