@@ -1,8 +1,10 @@
 import { Elysia, t } from 'elysia';
-import { createTransfer, createFile } from '../services/file.service';
+import { createTransfer, createFile, getTransferTotalSize, getValidTransfer } from '../services/file.service';
 import { getPresignedUploadUrl } from '../services/r2.service';
 import { checkRateLimit, checkVolumeLimit, rateLimiters } from '../services/ratelimit.service';
 import { env } from '../config/env';
+import { normalizeClientIp } from '../utils/ip';
+import { exceedsTotalLimit } from '../utils/limits';
 
 // nanoid validation pattern (21 chars, URL-safe alphabet)
 const NANOID_PATTERN = /^[A-Za-z0-9_-]{21}$/;
@@ -15,7 +17,7 @@ const MIN_PASSWORD_LENGTH = 8;
 export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
   // Create a new transfer (group of files)
   .post('/create-transfer', async ({ body, request, set }) => {
-    const ip = request.headers.get('x-forwarded-for') ?? 'unknown';
+    const ip = normalizeClientIp(request.headers.get('x-forwarded-for'));
 
     // Per-minute rate limit
     const rateLimit = await checkRateLimit(ip, rateLimiters.upload);
@@ -62,7 +64,7 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
 
   // Request a presigned URL for direct upload to R2
   .post('/request-upload-url', async ({ body, request, set }) => {
-    const ip = request.headers.get('x-forwarded-for') ?? 'unknown';
+    const ip = normalizeClientIp(request.headers.get('x-forwarded-for'));
 
     const rateLimit = await checkRateLimit(ip, rateLimiters.upload);
     if (!rateLimit.allowed) {
@@ -79,10 +81,22 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       return { error: 'Invalid transfer ID' };
     }
 
+    const transfer = await getValidTransfer(transferId);
+    if (!transfer) {
+      set.status = 404;
+      return { error: 'Transfer not found or has expired' };
+    }
+
     // Validate file size
     if (size > env.MAX_FILE_SIZE) {
       set.status = 400;
       return { error: `File too large. Maximum size is ${env.MAX_FILE_SIZE / (1024 * 1024)}MB` };
+    }
+
+    const currentTotal = await getTransferTotalSize(transferId);
+    if (exceedsTotalLimit(currentTotal, size, env.MAX_TOTAL_UPLOAD_SIZE)) {
+      set.status = 400;
+      return { error: `Transfer too large. Maximum total size is ${env.MAX_TOTAL_UPLOAD_SIZE / (1024 * 1024)}MB` };
     }
 
     // Monthly upload volume limit per IP

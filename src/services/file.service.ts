@@ -101,6 +101,22 @@ export async function getFilesByTransferId(transferId: string): Promise<File[]> 
     );
 }
 
+export async function getTransferTotalSize(transferId: string): Promise<number> {
+  const [row] = await db
+    .select({
+      total: sql<number>`coalesce(sum(${files.size}), 0)`
+    })
+    .from(files)
+    .where(
+      and(
+        eq(files.transferId, transferId),
+        eq(files.isDeleted, false)
+      )
+    );
+
+  return row?.total ?? 0;
+}
+
 export async function getFileById(id: string): Promise<File | null> {
   const [file] = await db
     .select()

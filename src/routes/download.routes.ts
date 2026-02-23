@@ -2,6 +2,7 @@ import { Elysia, t } from 'elysia';
 import { getValidTransfer, getFilesByTransferId, getFileById, incrementTransferDownloadCount, verifyTransferPassword } from '../services/file.service';
 import { getPresignedDownloadUrl } from '../services/r2.service';
 import { checkRateLimit, rateLimiters } from '../services/ratelimit.service';
+import { normalizeClientIp } from '../utils/ip';
 
 // nanoid validation pattern (21 chars, URL-safe alphabet)
 const NANOID_PATTERN = /^[A-Za-z0-9_-]{21}$/;
@@ -18,7 +19,7 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       return { error: 'Transfer not found or has expired' };
     }
 
-    const ip = request.headers.get('x-forwarded-for') ?? 'unknown';
+    const ip = normalizeClientIp(request.headers.get('x-forwarded-for'));
 
     const rateLimit = await checkRateLimit(ip, rateLimiters.download);
     if (!rateLimit.allowed) {
@@ -77,7 +78,7 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       return { error: 'Transfer not found or has expired' };
     }
 
-    const ip = request.headers.get('x-forwarded-for') ?? 'unknown';
+    const ip = normalizeClientIp(request.headers.get('x-forwarded-for'));
 
     const rateLimit = await checkRateLimit(ip, rateLimiters.password);
     if (!rateLimit.allowed) {
@@ -141,7 +142,7 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       return { error: 'File not found' };
     }
 
-    const ip = request.headers.get('x-forwarded-for') ?? 'unknown';
+    const ip = normalizeClientIp(request.headers.get('x-forwarded-for'));
 
     // Per-minute rate limit
     const rateLimit = await checkRateLimit(ip, rateLimiters.download);

@@ -115,8 +115,10 @@ async function checkRedisRateLimit(
     // Count current requests in window
     multi.zcard(key);
 
+    const member = `${now}:${Math.random()}`;
+
     // Add current request with timestamp
-    multi.zadd(key, now, `${now}:${Math.random()}`);
+    multi.zadd(key, now, member);
 
     // Set TTL on the key
     multi.expire(key, config.windowSeconds);
@@ -132,8 +134,8 @@ async function checkRedisRateLimit(
     const allowed = currentCount < config.maxRequests;
 
     if (!allowed) {
-      // Remove the request we just added since it's not allowed
-      await redis.zremrangebyscore(key, now, now);
+      // Remove only the request we just added since it's not allowed
+      await redis.zrem(key, member);
     }
 
     return {

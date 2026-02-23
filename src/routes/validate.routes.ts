@@ -1,16 +1,16 @@
 import { Elysia, t } from 'elysia';
 import { validateMagicBytes } from '../utils/magicBytes';
+import { decodeBase64ToBytes } from '../utils/base64';
 
 export const validateRoutes = new Elysia({ prefix: '/api' })
   .post('/validate', async ({ body, set }) => {
     const { magicBytes } = body;
 
-    // Decode base64 magic bytes
-    const bytes = new Uint8Array(
-      atob(magicBytes)
-        .split('')
-        .map(c => c.charCodeAt(0))
-    );
+    const bytes = decodeBase64ToBytes(magicBytes);
+    if (!bytes) {
+      set.status = 400;
+      return { valid: false, reason: 'Invalid base64 input' };
+    }
 
     const result = validateMagicBytes(bytes);
 

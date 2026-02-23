@@ -17,6 +17,10 @@ export const env = {
     getEnv("MAX_FILE_SIZE", String(1024 * 1024 * 1024)),
     10
   ), // 1GB default
+  MAX_TOTAL_UPLOAD_SIZE: parseInt(
+    getEnv("MAX_TOTAL_UPLOAD_SIZE", String(1024 * 1024 * 1024)),
+    10
+  ), // 1GB total per transfer default
 
   // Cloudflare R2 configuration
   R2_ENDPOINT: getEnv("R2_ENDPOINT"),
