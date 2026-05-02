@@ -1,53 +1,48 @@
-import { getExpiredTransfers, getFilesForTransfer, markTransferAsDeleted, markFileAsDeleted } from './file.service';
-import { deleteFromR2 } from './r2.service';
+import { getExpiredTransfers, getAbandonedTransfers, deleteExpiredTransfer, abortTransfer } from './file.service';
 
 export async function cleanupExpiredTransfers(): Promise<number> {
   const expiredTransfers = await getExpiredTransfers();
-  let deletedCount = 0;
+  let count = 0;
 
   for (const transfer of expiredTransfers) {
     try {
-      // Get all files for this transfer
-      const files = await getFilesForTransfer(transfer.id);
-
-      // Delete each file from R2 storage
-      for (const file of files) {
-        try {
-          await deleteFromR2(file.r2Key);
-          await markFileAsDeleted(file.id);
-        } catch (error) {
-          console.error(`Failed to delete file ${file.id}:`, error);
-        }
-      }
-
-      // Mark transfer as deleted
-      await markTransferAsDeleted(transfer.id);
-      deletedCount++;
-      console.log(`Deleted expired transfer: ${transfer.id} (${files.length} files)`);
+      await deleteExpiredTransfer(transfer);
+      count++;
     } catch (error) {
-      console.error(`Failed to delete transfer ${transfer.id}:`, error);
+      console.error(`[cleanup] Failed to delete expired transfer ${transfer.id}:`, error);
     }
   }
 
-  return deletedCount;
+  return count;
 }
 
-// Start cleanup interval (runs every hour)
+export async function cleanupAbandonedTransfers(): Promise<number> {
+  const abandoned = await getAbandonedTransfers();
+  let count = 0;
+
+  for (const transfer of abandoned) {
+    try {
+      await abortTransfer(transfer.id);
+      count++;
+    } catch (error) {
+      console.error(`[cleanup] Failed to delete abandoned transfer ${transfer.id}:`, error);
+    }
+  }
+
+  return count;
+}
+
 export function startCleanupJob(): void {
-  const HOUR_MS = 60 * 60 * 1000;
+  const INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
-  // Run immediately on startup
-  cleanupExpiredTransfers().then((count) => {
-    if (count > 0) {
-      console.log(`Initial cleanup: deleted ${count} expired transfers`);
+  const runCleanup = async () => {
+    const expired = await cleanupExpiredTransfers();
+    const abandoned = await cleanupAbandonedTransfers();
+    if (expired + abandoned > 0) {
+      console.log(`[cleanup] Deleted ${expired} expired, ${abandoned} abandoned transfers`);
     }
-  });
+  };
 
-  // Then run every hour
-  setInterval(async () => {
-    const count = await cleanupExpiredTransfers();
-    if (count > 0) {
-      console.log(`Cleanup job: deleted ${count} expired transfers`);
-    }
-  }, HOUR_MS);
+  runCleanup();
+  setInterval(runCleanup, INTERVAL_MS);
 }

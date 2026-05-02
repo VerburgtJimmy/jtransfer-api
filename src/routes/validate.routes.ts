@@ -1,9 +1,23 @@
 import { Elysia, t } from 'elysia';
 import { validateMagicBytes } from '../utils/magicBytes';
 import { decodeBase64ToBytes } from '../utils/base64';
+import { checkRateLimit, rateLimiters } from '../services/ratelimit.service';
+import { normalizeClientIp } from '../utils/ip';
 
 export const validateRoutes = new Elysia({ prefix: '/api' })
-  .post('/validate', async ({ body, set }) => {
+  .post('/validate', async ({ body, request, set }) => {
+    const ip = normalizeClientIp(
+      request.headers.get('cf-connecting-ip'),
+      request.headers.get('x-forwarded-for')
+    );
+
+    const rateLimit = await checkRateLimit(ip, rateLimiters.validate);
+    if (!rateLimit.allowed) {
+      set.status = 429;
+      set.headers['Retry-After'] = String(rateLimit.resetIn);
+      return { valid: false, reason: 'Rate limit exceeded. Try again later.' };
+    }
+
     const { magicBytes } = body;
 
     const bytes = decodeBase64ToBytes(magicBytes);
@@ -22,6 +36,6 @@ export const validateRoutes = new Elysia({ prefix: '/api' })
     return { valid: true };
   }, {
     body: t.Object({
-      magicBytes: t.String() // base64 encoded first N bytes
+      magicBytes: t.String()
     })
   });

@@ -13,7 +13,7 @@
     "@aws-sdk/s3-request-presigner": "^3.700.0",
     "@elysiajs/cors": "^1.1.0",
     "@elysiajs/cron": "^1.4.1",
-    "drizzle-orm": "^0.38.0",
+    "drizzle-orm": "^0.45.2",
     "elysia": "latest",
     "ioredis": "^5.9.2",
     "nanoid": "^5.0.9",
@@ -21,7 +21,7 @@
   },
   "devDependencies": {
     "bun-types": "latest",
-    "drizzle-kit": "^0.30.0"
+    "drizzle-kit": "^0.31.10"
   },
   "module": "src/index.js"
 }

@@ -1,5 +1,5 @@
 import { Elysia, t } from 'elysia';
-import { createTransfer, createFile, getTransferTotalSize, getValidTransfer } from '../services/file.service';
+import { createTransfer, completeTransfer, abortTransfer, logCompletedTransfer, createFile, getTransferTotalSize, getValidTransfer, getTransferById } from '../services/file.service';
 import { getPresignedUploadUrl } from '../services/r2.service';
 import { checkRateLimit, checkVolumeLimit, rateLimiters } from '../services/ratelimit.service';
 import { env } from '../config/env';
@@ -17,7 +17,7 @@ const MIN_PASSWORD_LENGTH = 8;
 export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
   // Create a new transfer (group of files)
   .post('/create-transfer', async ({ body, request, set }) => {
-    const ip = normalizeClientIp(request.headers.get('x-forwarded-for'));
+    const ip = normalizeClientIp(request.headers.get('cf-connecting-ip'), request.headers.get('x-forwarded-for'));
 
     // Per-minute rate limit
     const rateLimit = await checkRateLimit(ip, rateLimiters.upload);
@@ -35,12 +35,13 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       return { error: `Daily limit reached. You can create ${rateLimiters.dailyTransfers.maxRequests} transfers per day.` };
     }
 
-    const { expiresInDays, password } = body;
+    const { expiresInHours, password, maxDownloads } = body;
 
-    // Validate expiration (1 or 3 days)
-    if (expiresInDays !== 1 && expiresInDays !== 3) {
+    // Validate expiration
+    const ALLOWED_HOURS = [1, 6, 12, 24, 72] as const;
+    if (!ALLOWED_HOURS.includes(expiresInHours as typeof ALLOWED_HOURS[number])) {
       set.status = 400;
-      return { error: 'Invalid expiration. Must be 1 or 3 days.' };
+      return { error: 'Invalid expiration. Allowed values: 1, 6, 12, 24, 72 hours.' };
     }
 
     // Validate password if provided (minimum 8 characters for security)
@@ -49,7 +50,13 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       return { error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` };
     }
 
-    const transfer = await createTransfer(expiresInDays, password);
+    // Validate maxDownloads if provided
+    if (maxDownloads !== undefined && (maxDownloads < 1 || maxDownloads > 100)) {
+      set.status = 400;
+      return { error: 'maxDownloads must be between 1 and 100.' };
+    }
+
+    const transfer = await createTransfer(expiresInHours, password, maxDownloads);
 
     return {
       transferId: transfer.id,
@@ -57,14 +64,15 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
     };
   }, {
     body: t.Object({
-      expiresInDays: t.Number(),
-      password: t.Optional(t.String())
+      expiresInHours: t.Number(),
+      password: t.Optional(t.String({ maxLength: 256 })),
+      maxDownloads: t.Optional(t.Number({ minimum: 1, maximum: 100 }))
     })
   })
 
   // Request a presigned URL for direct upload to R2
   .post('/request-upload-url', async ({ body, request, set }) => {
-    const ip = normalizeClientIp(request.headers.get('x-forwarded-for'));
+    const ip = normalizeClientIp(request.headers.get('cf-connecting-ip'), request.headers.get('x-forwarded-for'));
 
     const rateLimit = await checkRateLimit(ip, rateLimiters.upload);
     if (!rateLimit.allowed) {
@@ -152,10 +160,48 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       return { error: 'Invalid transfer ID' };
     }
 
+    const transfer = await getValidTransfer(transferId);
+    if (!transfer) {
+      set.status = 404;
+      return { error: 'Transfer not found or has expired' };
+    }
+
+    await completeTransfer(transferId);
+    logCompletedTransfer(transfer).catch(() => {}); // fire-and-forget, never blocks response
+
     return {
       success: true,
       shareUrl: `/d/${transferId}`
     };
+  }, {
+    body: t.Object({
+      transferId: t.String({ minLength: 21, maxLength: 21 })
+    })
+  })
+
+  // Abort an in-progress transfer — deletes any already-uploaded files from R2
+  .post('/abort', async ({ body, set }) => {
+    const { transferId } = body;
+
+    if (!isValidNanoId(transferId)) {
+      set.status = 400;
+      return { error: 'Invalid transfer ID' };
+    }
+
+    // Only allow aborting incomplete transfers (completed ones are live)
+    const transfer = await getTransferById(transferId);
+    if (!transfer || transfer.isDeleted) {
+      set.status = 404;
+      return { error: 'Transfer not found' };
+    }
+
+    if (transfer.isCompleted) {
+      set.status = 409;
+      return { error: 'Transfer is already completed' };
+    }
+
+    await abortTransfer(transferId);
+    return { success: true };
   }, {
     body: t.Object({
       transferId: t.String({ minLength: 21, maxLength: 21 })
