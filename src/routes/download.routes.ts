@@ -1,5 +1,5 @@
 import { Elysia, t } from 'elysia';
-import { getValidTransfer, getFilesByTransferId, getFileById, incrementTransferDownloadCount, verifyTransferPassword } from '../services/file.service';
+import { getCompletedValidTransfer, getFilesByTransferId, getFileById, incrementTransferDownloadCount, verifyTransferPassword } from '../services/file.service';
 import { getPresignedDownloadUrl } from '../services/r2.service';
 import { checkRateLimit, rateLimiters } from '../services/ratelimit.service';
 import { normalizeClientIp } from '../utils/ip';
@@ -19,7 +19,7 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       return { error: 'Transfer not found or has expired' };
     }
 
-    const ip = normalizeClientIp(request.headers.get('x-forwarded-for'));
+    const ip = normalizeClientIp(request.headers.get('cf-connecting-ip'), request.headers.get('x-forwarded-for'));
 
     const rateLimit = await checkRateLimit(ip, rateLimiters.download);
     if (!rateLimit.allowed) {
@@ -28,7 +28,7 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       return { error: 'Rate limit exceeded. Try again later.' };
     }
 
-    const transfer = await getValidTransfer(params.id);
+    const transfer = await getCompletedValidTransfer(params.id);
 
     if (!transfer) {
       set.status = 404;
@@ -78,7 +78,7 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       return { error: 'Transfer not found or has expired' };
     }
 
-    const ip = normalizeClientIp(request.headers.get('x-forwarded-for'));
+    const ip = normalizeClientIp(request.headers.get('cf-connecting-ip'), request.headers.get('x-forwarded-for'));
 
     const rateLimit = await checkRateLimit(ip, rateLimiters.password);
     if (!rateLimit.allowed) {
@@ -87,7 +87,7 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       return { error: 'Too many password attempts. Try again later.' };
     }
 
-    const transfer = await getValidTransfer(params.id);
+    const transfer = await getCompletedValidTransfer(params.id);
 
     if (!transfer) {
       set.status = 404;
@@ -142,7 +142,7 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       return { error: 'File not found' };
     }
 
-    const ip = normalizeClientIp(request.headers.get('x-forwarded-for'));
+    const ip = normalizeClientIp(request.headers.get('cf-connecting-ip'), request.headers.get('x-forwarded-for'));
 
     // Per-minute rate limit
     const rateLimit = await checkRateLimit(ip, rateLimiters.download);
@@ -167,8 +167,8 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       return { error: 'File not found' };
     }
 
-    // Verify the transfer is still valid
-    const transfer = await getValidTransfer(file.transferId);
+    // Verify the transfer is still valid and completed
+    const transfer = await getCompletedValidTransfer(file.transferId);
     if (!transfer) {
       set.status = 404;
       return { error: 'Transfer has expired' };

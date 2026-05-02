@@ -1,13 +1,17 @@
 import { eq, and, lt, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db } from '../db';
-import { transfers, files, type NewTransfer, type NewFile, type Transfer, type File } from '../db/schema';
+import { transfers, files, transferEvents, type NewTransfer, type NewFile, type Transfer, type File } from '../db/schema';
 
 // Transfer operations
-export async function createTransfer(expiresInDays: number, password?: string): Promise<Transfer> {
+export async function createTransfer(
+  expiresInHours: number,
+  password?: string,
+  maxDownloads?: number
+): Promise<Transfer> {
   const id = nanoid();
   const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + expiresInDays);
+  expiresAt.setTime(expiresAt.getTime() + expiresInHours * 60 * 60 * 1000);
 
   // Hash password if provided (Argon2id via Bun)
   const passwordHash = password ? await Bun.password.hash(password) : null;
@@ -15,10 +19,19 @@ export async function createTransfer(expiresInDays: number, password?: string): 
   const [transfer] = await db.insert(transfers).values({
     id,
     expiresAt,
-    passwordHash
+    passwordHash,
+    maxDownloads: maxDownloads ?? null,
+    isCompleted: false
   }).returning();
 
   return transfer;
+}
+
+export async function completeTransfer(id: string): Promise<void> {
+  await db
+    .update(transfers)
+    .set({ isCompleted: true })
+    .where(eq(transfers.id, id));
 }
 
 export async function verifyTransferPassword(transferId: string, password: string): Promise<boolean> {
@@ -61,11 +74,93 @@ export async function getValidTransfer(id: string): Promise<Transfer | null> {
   return transfer;
 }
 
+export async function getCompletedValidTransfer(id: string): Promise<Transfer | null> {
+  const transfer = await getValidTransfer(id);
+  if (!transfer) return null;
+
+  // Only expose completed transfers to downloaders
+  if (!transfer.isCompleted) return null;
+
+  return transfer;
+}
+
 export async function incrementTransferDownloadCount(id: string): Promise<void> {
   await db
     .update(transfers)
     .set({ downloadCount: sql`${transfers.downloadCount} + 1` })
     .where(eq(transfers.id, id));
+}
+
+async function logTransferEvent(
+  event: 'completed' | 'expired' | 'aborted',
+  transfer: Transfer,
+  fileCount: number,
+  totalBytes: number
+): Promise<void> {
+  try {
+    await db.insert(transferEvents).values({
+      event,
+      transferId: transfer.id,
+      fileCount,
+      totalBytes,
+      downloadCount: transfer.downloadCount,
+      hasPassword: transfer.passwordHash !== null,
+      maxDownloads: transfer.maxDownloads ?? null,
+    });
+  } catch (err) {
+    // Logging must never break the main flow
+    console.error('[log] Failed to write transfer event:', err);
+  }
+}
+
+async function hardDeleteTransfer(id: string): Promise<void> {
+  await db.delete(files).where(eq(files.transferId, id));
+  await db.delete(transfers).where(eq(transfers.id, id));
+}
+
+export async function abortTransfer(id: string): Promise<void> {
+  const { deleteFromR2 } = await import('./r2.service');
+  const transfer = await getTransferById(id);
+  const transferFiles = await getFilesForTransfer(id);
+
+  const totalBytes = transferFiles.reduce((sum, f) => sum + f.size, 0);
+
+  for (const file of transferFiles) {
+    try {
+      await deleteFromR2(file.r2Key);
+    } catch {
+      // best-effort — DB cleanup proceeds regardless
+    }
+  }
+
+  if (transfer) {
+    await logTransferEvent('aborted', transfer, transferFiles.length, totalBytes);
+  }
+
+  await hardDeleteTransfer(id);
+}
+
+export async function deleteExpiredTransfer(transfer: Transfer): Promise<void> {
+  const { deleteFromR2 } = await import('./r2.service');
+  const transferFiles = await getFilesForTransfer(transfer.id);
+  const totalBytes = transferFiles.reduce((sum, f) => sum + f.size, 0);
+
+  for (const file of transferFiles) {
+    try {
+      await deleteFromR2(file.r2Key);
+    } catch {
+      console.error(`[cleanup] Failed to delete R2 object ${file.r2Key}:`, (file as any).error);
+    }
+  }
+
+  await logTransferEvent('expired', transfer, transferFiles.length, totalBytes);
+  await hardDeleteTransfer(transfer.id);
+}
+
+export async function logCompletedTransfer(transfer: Transfer): Promise<void> {
+  const transferFiles = await getFilesForTransfer(transfer.id);
+  const totalBytes = transferFiles.reduce((sum, f) => sum + f.size, 0);
+  await logTransferEvent('completed', transfer, transferFiles.length, totalBytes);
 }
 
 export async function markTransferAsDeleted(id: string): Promise<void> {
@@ -114,7 +209,8 @@ export async function getTransferTotalSize(transferId: string): Promise<number> 
       )
     );
 
-  return row?.total ?? 0;
+  // postgres.js returns bigint aggregate results as strings — coerce explicitly
+  return Number(row?.total ?? 0);
 }
 
 export async function getFileById(id: string): Promise<File | null> {
@@ -148,6 +244,21 @@ export async function getExpiredTransfers(): Promise<Transfer[]> {
       and(
         eq(transfers.isDeleted, false),
         lt(transfers.expiresAt, new Date())
+      )
+    );
+}
+
+// Incomplete transfers older than 30 minutes — upload was abandoned or failed
+export async function getAbandonedTransfers(): Promise<Transfer[]> {
+  const cutoff = new Date(Date.now() - 30 * 60 * 1000);
+  return db
+    .select()
+    .from(transfers)
+    .where(
+      and(
+        eq(transfers.isDeleted, false),
+        eq(transfers.isCompleted, false),
+        lt(transfers.createdAt, cutoff)
       )
     );
 }

@@ -20,7 +20,7 @@ const BUCKET_NAME = env.R2_BUCKET_NAME;
 
 // Presigned URL expiration times
 const UPLOAD_URL_EXPIRY = 60 * 60; // 1 hour for uploads
-const DOWNLOAD_URL_EXPIRY = 60 * 60; // 1 hour for downloads
+const DOWNLOAD_URL_EXPIRY = 15 * 60; // 15 minutes for downloads
 
 export interface PresignedUploadUrl {
   url: string;

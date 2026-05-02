@@ -72,6 +72,15 @@ interface RateLimitConfig {
   maxRequests: number;
 }
 
+interface VolumeLimitConfig {
+  prefix: string;
+  windowSeconds: number;
+  /** Maximum bytes allowed in the window */
+  maxBytes: number;
+  /** Bytes to add for this request */
+  increment: number;
+}
+
 interface RateLimitResult {
   allowed: boolean;
   remaining: number;
@@ -188,7 +197,7 @@ function checkMemoryRateLimit(
  */
 export async function checkVolumeLimit(
   identifier: string,
-  config: RateLimitConfig & { increment: number }
+  config: VolumeLimitConfig
 ): Promise<RateLimitResult> {
   const key = `volume:${config.prefix}:${identifier}`;
   const redisClient = getRedis();
@@ -203,7 +212,7 @@ export async function checkVolumeLimit(
 async function checkRedisVolumeLimit(
   redis: Redis,
   key: string,
-  config: RateLimitConfig & { increment: number }
+  config: VolumeLimitConfig
 ): Promise<RateLimitResult> {
   try {
     // Get current value
@@ -211,11 +220,11 @@ async function checkRedisVolumeLimit(
     const currentValue = current ? parseInt(current, 10) : 0;
 
     // Check if adding increment would exceed limit
-    if (currentValue + config.increment > config.maxRequests) {
+    if (currentValue + config.increment > config.maxBytes) {
       const ttl = await redis.ttl(key);
       return {
         allowed: false,
-        remaining: Math.max(0, config.maxRequests - currentValue),
+        remaining: Math.max(0, config.maxBytes - currentValue),
         resetIn: ttl > 0 ? ttl : config.windowSeconds,
       };
     }
@@ -228,7 +237,7 @@ async function checkRedisVolumeLimit(
 
     return {
       allowed: true,
-      remaining: Math.max(0, config.maxRequests - currentValue - config.increment),
+      remaining: Math.max(0, config.maxBytes - currentValue - config.increment),
       resetIn: config.windowSeconds,
     };
   } catch (err) {
@@ -239,34 +248,32 @@ async function checkRedisVolumeLimit(
 
 function checkMemoryVolumeLimit(
   key: string,
-  config: RateLimitConfig & { increment: number }
+  config: VolumeLimitConfig
 ): RateLimitResult {
   const now = Date.now();
   const windowMs = config.windowSeconds * 1000;
   const counter = memoryCounters.get(key);
 
   if (!counter || now > counter.resetAt) {
-    // New window
-    if (config.increment > config.maxRequests) {
+    if (config.increment > config.maxBytes) {
       return {
         allowed: false,
-        remaining: config.maxRequests,
+        remaining: config.maxBytes,
         resetIn: config.windowSeconds,
       };
     }
     memoryCounters.set(key, { value: config.increment, resetAt: now + windowMs });
     return {
       allowed: true,
-      remaining: config.maxRequests - config.increment,
+      remaining: config.maxBytes - config.increment,
       resetIn: config.windowSeconds,
     };
   }
 
-  // Check if adding increment would exceed limit
-  if (counter.value + config.increment > config.maxRequests) {
+  if (counter.value + config.increment > config.maxBytes) {
     return {
       allowed: false,
-      remaining: Math.max(0, config.maxRequests - counter.value),
+      remaining: Math.max(0, config.maxBytes - counter.value),
       resetIn: Math.ceil((counter.resetAt - now) / 1000),
     };
   }
@@ -274,7 +281,7 @@ function checkMemoryVolumeLimit(
   counter.value += config.increment;
   return {
     allowed: true,
-    remaining: Math.max(0, config.maxRequests - counter.value),
+    remaining: Math.max(0, config.maxBytes - counter.value),
     resetIn: Math.ceil((counter.resetAt - now) / 1000),
   };
 }
@@ -285,6 +292,7 @@ const MONTH_SECONDS = 30 * DAY_SECONDS;
 
 export const rateLimiters = {
   // Per-minute limits
+  validate: { prefix: 'validate', windowSeconds: 60, maxRequests: env.RATE_LIMIT_VALIDATE_PER_MINUTE },
   upload: { prefix: 'upload', windowSeconds: 60, maxRequests: env.RATE_LIMIT_UPLOADS_PER_MINUTE },
   download: { prefix: 'download', windowSeconds: 60, maxRequests: env.RATE_LIMIT_DOWNLOADS_PER_MINUTE },
   password: { prefix: 'password', windowSeconds: 60, maxRequests: 5 },
@@ -293,6 +301,6 @@ export const rateLimiters = {
   dailyTransfers: { prefix: 'daily-transfers', windowSeconds: DAY_SECONDS, maxRequests: env.RATE_LIMIT_DAILY_TRANSFERS },
   dailyDownloads: { prefix: 'daily-downloads', windowSeconds: DAY_SECONDS, maxRequests: env.RATE_LIMIT_DAILY_DOWNLOADS },
 
-  // Monthly volume limit (value is in bytes)
-  monthlyUploadVolume: { prefix: 'monthly-upload-volume', windowSeconds: MONTH_SECONDS, maxRequests: env.RATE_LIMIT_MONTHLY_UPLOAD_GB },
+  // Monthly volume limit (bytes)
+  monthlyUploadVolume: { prefix: 'monthly-upload-volume', windowSeconds: MONTH_SECONDS, maxBytes: env.RATE_LIMIT_MONTHLY_UPLOAD_GB },
 } as const;
