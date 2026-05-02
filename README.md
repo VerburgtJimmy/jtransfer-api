@@ -1,5 +1,7 @@
 # JTransfer API
 
+[![CI](https://github.com/VerburgtJimmy/jtransfer-api/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/VerburgtJimmy/jtransfer-api/actions/workflows/ci.yml)
+
 Backend API for JTransfer - a secure, end-to-end encrypted file sharing service.
 
 ## Status
