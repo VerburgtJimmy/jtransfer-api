@@ -6,10 +6,9 @@
 #   DATABASE_URL           Postgres connection URL.
 #   AGE_RECIPIENTS_FILE    Path to a file with one age recipient public key per line.
 #   RCLONE_CONFIG          Path to the rclone config file.
-#   RCLONE_REMOTE          rclone remote and path, e.g. hetzner-storagebox:jtransfer-backups
+#   RCLONE_REMOTE          rclone remote and bucket, e.g. scaleway-backups:jtransfer-backups-prod
 #
-# Optional:
-#   RETENTION_DAYS         Defaults to 30. Older backups are deleted from the remote.
+# Retention is enforced by the bucket's lifecycle policy, not this script.
 
 set -euo pipefail
 
@@ -17,7 +16,6 @@ set -euo pipefail
 : "${AGE_RECIPIENTS_FILE:?AGE_RECIPIENTS_FILE is required}"
 : "${RCLONE_CONFIG:?RCLONE_CONFIG is required}"
 : "${RCLONE_REMOTE:?RCLONE_REMOTE is required}"
-RETENTION_DAYS="${RETENTION_DAYS:-30}"
 
 export RCLONE_CONFIG
 
@@ -53,8 +51,5 @@ fi
 
 echo "[backup] uploading to $RCLONE_REMOTE"
 rclone copy --no-traverse "$local_path" "$RCLONE_REMOTE"
-
-echo "[backup] pruning remote files older than ${RETENTION_DAYS}d"
-rclone delete --min-age "${RETENTION_DAYS}d" "$RCLONE_REMOTE"
 
 echo "[backup] done: $outfile"

@@ -1,21 +1,15 @@
 # Copy to /etc/jtransfer/rclone.conf and fill in. chmod 600.
 #
-# Hetzner Storage Box exposes SFTP on port 23.
-# Username and host come from the Storage Box panel (e.g. u123456 / u123456.your-storagebox.de).
-#
-# Recommended: configure SSH key auth in the Storage Box panel and use `key_file`
-# instead of `pass`. If you must use a password, generate the obscured value with:
-#   rclone obscure 'your-storage-box-password'
+# Scaleway Object Storage in Amsterdam region.
+# Generate the access_key_id / secret_access_key under
+# Scaleway console -> IAM -> API keys. Scope the application to the
+# backup bucket only when possible.
 
-[hetzner-storagebox]
-type = sftp
-host = CHANGE_ME.your-storagebox.de
-user = CHANGE_ME
-port = 23
-# Either key-based auth (preferred):
-key_file = /etc/jtransfer/storagebox_id_ed25519
-# Or password auth (rclone obscure ...):
-# pass = CHANGE_ME_OBSCURED
-shell_type = unix
-md5sum_command = md5 -r
-sha1sum_command = sha1 -r
+[scaleway-backups]
+type = s3
+provider = Scaleway
+region = nl-ams
+endpoint = s3.nl-ams.scw.cloud
+access_key_id = SCW_CHANGE_ME
+secret_access_key = CHANGE_ME
+acl = private

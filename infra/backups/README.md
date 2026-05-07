@@ -1,8 +1,8 @@
 # JTransfer Postgres Backups
 
 Daily off-VPS Postgres backups, encrypted at rest with [age](https://age-encryption.org)
-and pushed to a [Hetzner Storage Box](https://www.hetzner.com/storage/storage-box) over
-SFTP via [rclone](https://rclone.org).
+and pushed to a [Scaleway Object Storage](https://www.scaleway.com/en/object-storage/)
+bucket via [rclone](https://rclone.org).
 
 The Postgres database holds transfer metadata only (encrypted file blobs live in R2,
 keyed by data the database knows about). Losing this database means losing the index
@@ -10,11 +10,31 @@ needed to look up, expire, and serve every active transfer.
 
 ## Threat model
 
-- Encrypted dumps are uploaded to a third-party Storage Box. Hetzner can read the
-  ciphertext but not the plaintext (age recipient is a key Hetzner does not hold).
+- Encrypted dumps are uploaded to a third-party object store. Scaleway can read the
+  ciphertext but not the plaintext (age recipient is a key Scaleway does not hold).
 - The age private key is held by the operator only. If the private key is lost,
   every backup becomes unreadable. Treat its loss as equivalent to losing the
   database.
+- Bucket-level Object Lock + versioning prevent accidental or malicious deletion
+  within the retention window even if rclone credentials leak.
+
+## Bucket configuration (Scaleway console)
+
+Set up once, in the Scaleway console:
+
+- **Region:** Amsterdam (`nl-ams`).
+- **Storage class:** Standard Multi-AZ.
+- **Visibility:** Private.
+- **Versioning:** enabled.
+- **Bucket encryption:** SSE-ONE.
+- **Object Lock:** enabled at bucket creation (governance or compliance mode).
+- **Lifecycle rules:**
+  - Expire current versions after 30 days.
+  - Expire non-current versions 30 days after they become non-current.
+  - Abort incomplete multipart uploads after 7 days.
+
+Total time from upload to actual purge ≈ 60 days, which is the recovery window
+if a malicious or accidental deletion is noticed late.
 
 ## One-time setup
 
@@ -39,17 +59,14 @@ for restore drills.
 Replace the placeholder in `age-recipients.txt` with the line printed by
 `age-keygen`. Commit and push.
 
-### 3. Provision the Storage Box
+### 3. Generate Scaleway API credentials
 
-Order a Storage Box in the Hetzner Robot panel. Note:
+In the Scaleway console: **IAM → API keys → Generate new API key**.
 
-- Username (e.g. `u123456`)
-- Hostname (e.g. `u123456.your-storagebox.de`)
-- SSH/SFTP password
-- Port `23` for SSH/SFTP
-
-Optional but recommended: enable SSH key access in the Storage Box panel and add
-the VPS's SSH public key. Password auth still works as fallback.
+- Scope to a dedicated application or user that only has access to the backup
+  bucket. Avoid using your main account API key.
+- Save the access key (starts with `SCW...`) and secret key.
+- These go into `/etc/jtransfer/rclone.conf` on the VPS.
 
 ### 4. Install prerequisites on the VPS
 
@@ -70,11 +87,13 @@ sudo chmod 600 /etc/jtransfer/rclone.conf
 sudo $EDITOR /etc/jtransfer/rclone.conf
 ```
 
-Fill in the Storage Box host, user, and credentials. Test:
+Paste in the access key and secret key from step 3. Test connectivity:
 
 ```bash
-sudo rclone --config /etc/jtransfer/rclone.conf lsd hetzner-storagebox:
+sudo rclone --config /etc/jtransfer/rclone.conf lsd scaleway-backups:
 ```
+
+You should see your bucket listed.
 
 ### 6. Drop the env file
 
@@ -84,7 +103,8 @@ sudo chmod 600 /etc/jtransfer/backup.env
 sudo $EDITOR /etc/jtransfer/backup.env
 ```
 
-Fill in `DATABASE_URL` and confirm the other values.
+Fill in `DATABASE_URL` and `RCLONE_REMOTE` (set this to
+`scaleway-backups:<your-bucket-name>`).
 
 ### 7. Install the script and the age recipients
 
@@ -114,7 +134,7 @@ systemctl list-timers jtransfer-backup.timer
 ```bash
 sudo systemctl start jtransfer-backup.service
 sudo journalctl -u jtransfer-backup.service -n 100 --no-pager
-sudo rclone --config /etc/jtransfer/rclone.conf ls hetzner-storagebox:jtransfer-backups
+sudo rclone --config /etc/jtransfer/rclone.conf ls scaleway-backups:<your-bucket-name>
 ```
 
 You should see a new `jtransfer-YYYYMMDDTHHMMSSZ.dump.age` object.
@@ -126,7 +146,7 @@ Run periodically (target: monthly) to verify backups are usable.
 ```bash
 # 1. Pull a recent backup
 rclone --config /etc/jtransfer/rclone.conf copy \
-  hetzner-storagebox:jtransfer-backups/jtransfer-<stamp>.dump.age ./
+  scaleway-backups:<bucket>/jtransfer-<stamp>.dump.age ./
 
 # 2. Decrypt
 age -d -i ~/.config/age/jtransfer-backup.key \
@@ -148,7 +168,8 @@ dropdb jtransfer_restore_test
 ## Operations
 
 - **Schedule:** 03:00 UTC daily, with a 5-minute randomized delay.
-- **Retention:** 30 days on the Storage Box (configurable via `RETENTION_DAYS`).
+- **Retention:** enforced by the bucket's lifecycle policy (30 days current +
+  30 days non-current). The script does not delete objects.
 - **Failure visibility:** the systemd unit's exit code drives journald. Hook
   monitoring to `journalctl --identifier=jtransfer-backup` or to
   `systemctl is-failed jtransfer-backup.service` from a probe.
