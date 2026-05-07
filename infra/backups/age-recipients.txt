@@ -1,0 +1,13 @@
+# JTransfer backup encryption recipients.
+# One age recipient public key per line. Lines starting with # are ignored.
+#
+# To populate:
+#   1. On your workstation, run:
+#        age-keygen -o ~/.config/age/jtransfer-backup.key
+#   2. Save the contents of that file to your password manager (it holds the private key).
+#   3. Copy the line beginning with `age1` printed by age-keygen and paste it below,
+#      replacing the placeholder. Commit only the public key.
+#
+# DO NOT commit the private key. Anyone who holds it can decrypt every backup.
+
+age1tezdqprc097mn6vafnzw8ekftqm5k5ege5v66ap3cp3q6wsfzfgs9nzqra
