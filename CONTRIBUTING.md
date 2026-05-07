@@ -29,7 +29,11 @@ bun run db:push
 
 ## Commit Messages
 
-We follow conventional commits. Format your commit messages as:
+Conventional commits are enforced via a `commit-msg` git hook (lefthook +
+commitlint), installed automatically when you run `bun install`. A commit with
+a non-conformant message will be rejected before it lands in history.
+
+Format your commit messages as:
 
 ```
 type(scope): description

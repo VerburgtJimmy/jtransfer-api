@@ -1,0 +1,8 @@
+# Git hooks managed by lefthook (https://lefthook.dev).
+# Hooks install automatically via the `prepare` script in package.json after
+# `bun install`. To install manually: `bunx lefthook install`.
+
+commit-msg:
+  commands:
+    commitlint:
+      run: bunx commitlint --edit {1}
