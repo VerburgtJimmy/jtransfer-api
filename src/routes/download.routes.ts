@@ -48,9 +48,6 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       };
     }
 
-    // Increment download count
-    await incrementTransferDownloadCount(transfer.id);
-
     return {
       id: transfer.id,
       expiresAt: transfer.expiresAt,
@@ -108,9 +105,6 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
 
     // Get all files for this transfer
     const files = await getFilesByTransferId(transfer.id);
-
-    // Increment download count
-    await incrementTransferDownloadCount(transfer.id);
 
     return {
       id: transfer.id,
@@ -176,6 +170,9 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
 
     // Generate presigned download URL
     const presigned = await getPresignedDownloadUrl(file.r2Key);
+
+    // Increment download count once the URL has been handed off
+    await incrementTransferDownloadCount(transfer.id);
 
     return {
       downloadUrl: presigned.url,

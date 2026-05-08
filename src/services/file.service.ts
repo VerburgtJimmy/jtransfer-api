@@ -148,8 +148,8 @@ export async function deleteExpiredTransfer(transfer: Transfer): Promise<void> {
   for (const file of transferFiles) {
     try {
       await deleteFromR2(file.r2Key);
-    } catch {
-      console.error(`[cleanup] Failed to delete R2 object ${file.r2Key}:`, (file as any).error);
+    } catch (err) {
+      console.error(`[cleanup] Failed to delete R2 object ${file.r2Key}:`, err);
     }
   }
 
