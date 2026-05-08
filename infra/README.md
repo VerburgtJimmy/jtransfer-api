@@ -42,14 +42,12 @@ server {
     # ... existing Ploi config (root, ssl_certificate, etc.) ...
 
     include snippets/jtransfer-security-headers.conf;
-
-    # Robots-noindex on download routes
-    location ~ ^/d/ {
-        include snippets/jtransfer-download-route.conf;
-        try_files $uri $uri/ /index.html;
-    }
+    include snippets/jtransfer-download-route.conf;   # robots-noindex on /d/*
 
     # ... rest of existing config ...
+    # The default `location / { try_files $uri /index.html; }` already serves
+    # /d/* via SPA fallback. No /d-specific location block is needed —
+    # download-route.conf adds the X-Robots-Tag conditionally at server scope.
 }
 ```
 
