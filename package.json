@@ -21,8 +21,11 @@
     "postgres": "^3.4.5"
   },
   "devDependencies": {
+    "@commitlint/cli": "^21.0.0",
+    "@commitlint/config-conventional": "^21.0.0",
     "bun-types": "latest",
-    "drizzle-kit": "^0.31.10"
+    "drizzle-kit": "^0.31.10",
+    "lefthook": "^2.1.6"
   },
   "module": "src/index.js"
 }

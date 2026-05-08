@@ -24,13 +24,6 @@ const app = new Elysia()
       exposeHeaders: ["Content-Length", "Content-Type"],
     })
   )
-  // Security headers
-  .onBeforeHandle(({ set }) => {
-    set.headers["X-Content-Type-Options"] = "nosniff";
-    set.headers["X-Frame-Options"] = "DENY";
-    set.headers["X-XSS-Protection"] = "1; mode=block";
-    set.headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
-  })
   .get("/health", () => ({ status: "ok", timestamp: new Date().toISOString() }))
   .use(uploadRoutes)
   .use(downloadRoutes)
