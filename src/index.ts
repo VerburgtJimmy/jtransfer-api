@@ -1,6 +1,7 @@
 import { cors } from "@elysiajs/cors";
 import { Elysia } from "elysia";
 import { env } from "./config/env";
+import { authRoutes } from "./routes/auth.routes";
 import { downloadRoutes } from "./routes/download.routes";
 import { uploadRoutes } from "./routes/upload.routes";
 import { validateRoutes } from "./routes/validate.routes";
@@ -25,6 +26,7 @@ const app = new Elysia()
     })
   )
   .get("/health", () => ({ status: "ok", timestamp: new Date().toISOString() }))
+  .use(authRoutes)
   .use(uploadRoutes)
   .use(downloadRoutes)
   .use(validateRoutes)

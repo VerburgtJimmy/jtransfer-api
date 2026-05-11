@@ -7,6 +7,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun run src/db/migrate.ts",
     "db:push": "drizzle-kit push",
+    "auth:smoke": "bun run scripts/auth-smoke.ts",
     "prepare": "lefthook install || true"
   },
   "dependencies": {

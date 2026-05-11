@@ -21,3 +21,9 @@ export function normalizeClientIp(
 
   return first;
 }
+
+// Postgres `inet` columns reject the "unknown" sentinel. Use this when
+// persisting an IP to the database — returns null instead of "unknown".
+export function ipForStorage(ip: string): string | null {
+  return ip === "unknown" ? null : ip;
+}

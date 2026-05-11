@@ -8,6 +8,9 @@ function getEnv(key: string, defaultValue?: string): string {
 
 const GB = 1024 * 1024 * 1024;
 
+const NODE_ENV = process.env.NODE_ENV ?? "development";
+const IS_PRODUCTION = NODE_ENV === "production";
+
 export const env = {
   DATABASE_URL: getEnv("DATABASE_URL"),
   REDIS_URL: process.env.REDIS_URL, // Optional - falls back to in-memory if not set
@@ -35,4 +38,52 @@ export const env = {
   RATE_LIMIT_DAILY_TRANSFERS: parseInt(getEnv("RATE_LIMIT_DAILY_TRANSFERS", "20"), 10),
   RATE_LIMIT_DAILY_DOWNLOADS: parseInt(getEnv("RATE_LIMIT_DAILY_DOWNLOADS", "200"), 10),
   RATE_LIMIT_MONTHLY_UPLOAD_GB: parseInt(getEnv("RATE_LIMIT_MONTHLY_UPLOAD_GB", "2"), 10) * GB,
+
+  // Auth — magic-link primary. See docs/audit/18-auth-security-baseline.md.
+  // APP_URL is the public frontend origin used to compose magic links.
+  APP_URL: getEnv("APP_URL", "http://localhost:5173"),
+
+  // Scaleway Transactional Email — transactional only per ToS (no marketing).
+  // When PROJECT_ID + SECRET_KEY are unset (dev), the email service logs the
+  // magic link to stdout instead of sending. NEVER deploy unset.
+  SCW_TEM_REGION: getEnv("SCW_TEM_REGION", "fr-par"),
+  SCW_TEM_PROJECT_ID: process.env.SCW_TEM_PROJECT_ID ?? "",
+  SCW_TEM_SECRET_KEY: process.env.SCW_TEM_SECRET_KEY ?? "",
+  EMAIL_FROM: getEnv("EMAIL_FROM", "noreply@localhost"),
+  EMAIL_FROM_NAME: getEnv("EMAIL_FROM_NAME", "JTransfer"),
+  EMAIL_REPLY_TO: process.env.EMAIL_REPLY_TO ?? "",
+
+  // Magic-link auth rate limits (per audit doc 18 §2). Configurable for
+  // operator tuning if abuse signals appear.
+  RATE_LIMIT_AUTH_REQUEST_PER_HOUR_PER_EMAIL: parseInt(
+    getEnv("RATE_LIMIT_AUTH_REQUEST_PER_HOUR_PER_EMAIL", "5"),
+    10,
+  ),
+  RATE_LIMIT_AUTH_REQUEST_PER_HOUR_PER_IP: parseInt(
+    getEnv("RATE_LIMIT_AUTH_REQUEST_PER_HOUR_PER_IP", "20"),
+    10,
+  ),
+  RATE_LIMIT_AUTH_VERIFY_PER_MINUTE_PER_IP: parseInt(
+    getEnv("RATE_LIMIT_AUTH_VERIFY_PER_MINUTE_PER_IP", "10"),
+    10,
+  ),
+
+  NODE_ENV,
+  IS_PRODUCTION,
 };
+
+// Production-only assertions — fail fast on misconfiguration that would let
+// real-world traffic hit dev defaults (insecure cookies, no email, etc.).
+if (IS_PRODUCTION) {
+  const missing: string[] = [];
+  if (!env.SCW_TEM_PROJECT_ID) missing.push("SCW_TEM_PROJECT_ID");
+  if (!env.SCW_TEM_SECRET_KEY) missing.push("SCW_TEM_SECRET_KEY");
+  if (env.EMAIL_FROM === "noreply@localhost") missing.push("EMAIL_FROM (still default)");
+  if (env.APP_URL.startsWith("http://localhost")) missing.push("APP_URL (still localhost default)");
+  if (missing.length > 0) {
+    throw new Error(
+      `Production env misconfigured. Required for auth: ${missing.join(", ")}. ` +
+        `In dev (NODE_ENV != production), these can be left unset and email is logged to stdout.`,
+    );
+  }
+}

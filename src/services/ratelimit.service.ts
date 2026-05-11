@@ -289,6 +289,7 @@ function checkMemoryVolumeLimit(
 // Pre-configured rate limiters
 const DAY_SECONDS = 24 * 60 * 60;
 const MONTH_SECONDS = 30 * DAY_SECONDS;
+const HOUR_SECONDS = 60 * 60;
 
 export const rateLimiters = {
   // Per-minute limits
@@ -303,4 +304,9 @@ export const rateLimiters = {
 
   // Monthly volume limit (bytes)
   monthlyUploadVolume: { prefix: 'monthly-upload-volume', windowSeconds: MONTH_SECONDS, maxBytes: env.RATE_LIMIT_MONTHLY_UPLOAD_GB },
+
+  // Auth — magic-link request + verify (per audit doc 18 §2)
+  authRequestPerEmail: { prefix: 'auth-request-email', windowSeconds: HOUR_SECONDS, maxRequests: env.RATE_LIMIT_AUTH_REQUEST_PER_HOUR_PER_EMAIL },
+  authRequestPerIp: { prefix: 'auth-request-ip', windowSeconds: HOUR_SECONDS, maxRequests: env.RATE_LIMIT_AUTH_REQUEST_PER_HOUR_PER_IP },
+  authVerifyPerIp: { prefix: 'auth-verify-ip', windowSeconds: 60, maxRequests: env.RATE_LIMIT_AUTH_VERIFY_PER_MINUTE_PER_IP },
 } as const;
