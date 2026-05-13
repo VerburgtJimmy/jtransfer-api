@@ -88,6 +88,11 @@ export const magicLinkTokens = pgTable('magic_link_tokens', {
   id: varchar('id', { length: 21 }).primaryKey(), // nanoid
   email: varchar('email', { length: 320 }).notNull(),
   tokenHash: varchar('token_hash', { length: 64 }).notNull(), // hex SHA-256
+  // Cross-device 6-digit code: hex SHA-256 of zero-padded digits. Bound to
+  // pendingSessionId — code alone is insufficient. See audit doc 21.
+  codeHash: varchar('code_hash', { length: 64 }),
+  pendingSessionId: varchar('pending_session_id', { length: 21 }),
+  codeAttempts: integer('code_attempts').default(0).notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   consumedAt: timestamp('consumed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -96,6 +101,9 @@ export const magicLinkTokens = pgTable('magic_link_tokens', {
 }, (table) => ({
   tokenHashUnique: uniqueIndex('magic_link_tokens_token_hash_unique').on(table.tokenHash),
   emailIdx: index('magic_link_tokens_email_idx').on(table.email),
+  pendingSessionIdx: index('magic_link_tokens_pending_session_idx')
+    .on(table.pendingSessionId)
+    .where(sql`${table.pendingSessionId} IS NOT NULL`),
 }));
 
 // 90-day retention; daily purge job. Per audit doc 18 §8.

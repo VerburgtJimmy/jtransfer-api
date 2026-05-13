@@ -37,6 +37,10 @@ function buildMagicLinkText({ link, expiresAt, ip, userAgent }: SendMagicLinkInp
     "",
     link,
     "",
+    "If you open this link on a different device than the one you started",
+    "signing in on, we'll show you a short code to type back into your",
+    "original device — no sign-in happens on the wrong device.",
+    "",
     "Request details:",
     `  IP: ${ip ?? "unknown"}`,
     `  Browser: ${userAgent ?? "unknown"}`,
@@ -58,6 +62,7 @@ function buildMagicLinkHtml(input: SendMagicLinkInput): string {
     `  <p>Click the button below to sign in. The link expires in <strong>${expiresIn} minutes</strong> and can only be used once.</p>`,
     `  <p style="margin:24px 0;"><a href="${escapeHtml(input.link)}" style="display:inline-block;padding:12px 20px;background:#111;color:#fff;text-decoration:none;border-radius:8px;">Sign in to JTransfer</a></p>`,
     `  <p style="font-size:13px;color:#555;">Or paste this URL into your browser:<br><code style="word-break:break-all;">${escapeHtml(input.link)}</code></p>`,
+    '  <p style="font-size:13px;color:#555;">Opening this link on a different device than the one you started signing in on will show you a short code to type back into your original device — no sign-in happens on the wrong device.</p>',
     '  <hr style="border:none;border-top:1px solid #eee;margin:24px 0;">',
     '  <p style="font-size:12px;color:#666;">Request details — IP: ' +
       escapeHtml(input.ip ?? "unknown") +

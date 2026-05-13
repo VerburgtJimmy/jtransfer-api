@@ -26,6 +26,37 @@ export async function hashToken(token: string): Promise<string> {
   return Buffer.from(digest).toString("hex");
 }
 
+const CODE_DIGITS = 6;
+const CODE_MOD = 10 ** CODE_DIGITS;
+// Largest multiple of CODE_MOD that fits in a uint32. Sampling and rejecting
+// values >= REJECT keeps the distribution uniform (ASVS 6.3.2 — CSPRNG).
+const CODE_REJECT = Math.floor(2 ** 32 / CODE_MOD) * CODE_MOD;
+
+/**
+ * Generate a uniformly random 6-digit numeric code, zero-padded to a string.
+ * Used for cross-device magic-link sign-in. See audit doc 21 §4.
+ */
+export function generateNumericCode(): string {
+  const buf = new Uint32Array(1);
+  while (true) {
+    crypto.getRandomValues(buf);
+    if (buf[0] < CODE_REJECT) {
+      return (buf[0] % CODE_MOD).toString().padStart(CODE_DIGITS, "0");
+    }
+  }
+}
+
+/**
+ * Accept a user-typed code in any digit-or-whitespace shape and reduce it to
+ * the canonical 6-digit form. Returns null if the input isn't exactly six
+ * digits after stripping spaces, dashes, and bidi marks.
+ */
+export function canonicaliseCode(input: string): string | null {
+  const stripped = input.replace(/[\s\-_]/g, "");
+  if (!/^\d{6}$/.test(stripped)) return null;
+  return stripped;
+}
+
 /**
  * Constant-time equality check for two hex-encoded hashes of equal length.
  * Defends against timing-side-channel comparisons on the verify path.
