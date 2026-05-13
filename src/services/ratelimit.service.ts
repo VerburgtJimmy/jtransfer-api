@@ -1,6 +1,28 @@
 import Redis from 'ioredis';
 import { env } from '../config/env';
 
+// Sliding-window check + add in one round trip.
+// Without this, two concurrent MULTIs against the same key can each see
+// count = N-1, both ZADD, and the limiter ends up at N+1 (audit doc 25 §B.2).
+// Returning [allowed (0|1), countAfter] keeps the API identical to the
+// previous MULTI-then-ZREM dance, just race-free.
+export const SLIDING_WINDOW_LUA = `
+local window_start = tonumber(ARGV[1])
+local now = tonumber(ARGV[2])
+local max = tonumber(ARGV[3])
+local member = ARGV[4]
+local ttl = tonumber(ARGV[5])
+
+redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, window_start)
+local count = redis.call('ZCARD', KEYS[1])
+if count >= max then
+  return {0, count}
+end
+redis.call('ZADD', KEYS[1], now, member)
+redis.call('EXPIRE', KEYS[1], ttl)
+return {1, count + 1}
+`;
+
 // Redis client (lazy initialized)
 let redis: Redis | null = null;
 let redisAvailable = true;
@@ -24,6 +46,11 @@ function getRedis(): Redis | null {
       lazyConnect: true,
     });
 
+    redis.defineCommand('jtSlidingWindow', {
+      numberOfKeys: 1,
+      lua: SLIDING_WINDOW_LUA,
+    });
+
     redis.on('error', (err) => {
       if (redisAvailable) {
         console.warn('[RateLimit] Redis error:', err.message);
@@ -42,6 +69,17 @@ function getRedis(): Redis | null {
   }
 
   return redisAvailable ? redis : null;
+}
+
+interface RedisWithSlidingWindow extends Redis {
+  jtSlidingWindow(
+    key: string,
+    windowStart: number,
+    now: number,
+    max: number,
+    member: string,
+    ttl: number,
+  ): Promise<[number, number]>;
 }
 
 // In-memory fallback for development or when Redis is unavailable
@@ -113,43 +151,26 @@ async function checkRedisRateLimit(
   try {
     const now = Math.floor(Date.now() / 1000);
     const windowStart = now - config.windowSeconds;
-
-    // Use a sorted set with timestamps as scores
-    // This implements a sliding window rate limiter
-    const multi = redis.multi();
-
-    // Remove old entries outside the window
-    multi.zremrangebyscore(key, 0, windowStart);
-
-    // Count current requests in window
-    multi.zcard(key);
-
     const member = `${now}:${Math.random()}`;
 
-    // Add current request with timestamp
-    multi.zadd(key, now, member);
+    // One Lua round-trip: prune old → count → add iff under cap → set TTL.
+    // Returns [0|1, countAfter]. Race-free vs concurrent callers on the
+    // same key (audit doc 25 §B.2, decision D-103).
+    const [allowedFlag, countAfter] = await (redis as RedisWithSlidingWindow)
+      .jtSlidingWindow(
+        key,
+        windowStart,
+        now,
+        config.maxRequests,
+        member,
+        config.windowSeconds,
+      );
 
-    // Set TTL on the key
-    multi.expire(key, config.windowSeconds);
-
-    const results = await multi.exec();
-
-    if (!results) {
-      // Transaction failed, fall back to memory
-      return checkMemoryRateLimit(key, config);
-    }
-
-    const currentCount = (results[1][1] as number) || 0;
-    const allowed = currentCount < config.maxRequests;
-
-    if (!allowed) {
-      // Remove only the request we just added since it's not allowed
-      await redis.zrem(key, member);
-    }
+    const allowed = allowedFlag === 1;
 
     return {
       allowed,
-      remaining: Math.max(0, config.maxRequests - currentCount - (allowed ? 1 : 0)),
+      remaining: Math.max(0, config.maxRequests - countAfter),
       resetIn: config.windowSeconds,
     };
   } catch (err) {
@@ -309,4 +330,14 @@ export const rateLimiters = {
   authRequestPerEmail: { prefix: 'auth-request-email', windowSeconds: HOUR_SECONDS, maxRequests: env.RATE_LIMIT_AUTH_REQUEST_PER_HOUR_PER_EMAIL },
   authRequestPerIp: { prefix: 'auth-request-ip', windowSeconds: HOUR_SECONDS, maxRequests: env.RATE_LIMIT_AUTH_REQUEST_PER_HOUR_PER_IP },
   authVerifyPerIp: { prefix: 'auth-verify-ip', windowSeconds: 60, maxRequests: env.RATE_LIMIT_AUTH_VERIFY_PER_MINUTE_PER_IP },
+
+  // Per-user limits on /me/transfers (per audit doc 20 §6)
+  meTransfersList: { prefix: 'me-transfers-list', windowSeconds: 60, maxRequests: 60 },
+  meTransfersDelete: { prefix: 'me-transfers-delete', windowSeconds: 60, maxRequests: 10 },
+
+  // Per-user limit on DELETE /api/me (per audit doc 23 §7)
+  accountDelete: { prefix: 'account-delete', windowSeconds: HOUR_SECONDS, maxRequests: 5 },
+
+  // Per-user limit on GET /api/me/export (per audit doc 24 §7)
+  accountExport: { prefix: 'account-export', windowSeconds: HOUR_SECONDS, maxRequests: 3 },
 } as const;

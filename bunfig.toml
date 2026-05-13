@@ -1,0 +1,4 @@
+[test]
+# Test harness setup: redirects DATABASE_URL to TEST_DATABASE_URL, runs
+# migrations, and stubs the R2 service. See tests/setup.ts.
+preload = ["./tests/setup.ts"]

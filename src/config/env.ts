@@ -11,6 +11,12 @@ const GB = 1024 * 1024 * 1024;
 const NODE_ENV = process.env.NODE_ENV ?? "development";
 const IS_PRODUCTION = NODE_ENV === "production";
 
+function randomSecret(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Buffer.from(bytes).toString("base64url");
+}
+
 export const env = {
   DATABASE_URL: getEnv("DATABASE_URL"),
   REDIS_URL: process.env.REDIS_URL, // Optional - falls back to in-memory if not set
@@ -68,6 +74,14 @@ export const env = {
     10,
   ),
 
+  // HMAC secret for the short-lived "password OK" download token issued by
+  // /api/download/transfer/:id/verify and required by /api/download/file/:id/url
+  // when the transfer is password-protected. See docs/audit/25-external-audit-findings.md
+  // §A.4. In production this must be set explicitly so the secret survives
+  // restarts (otherwise tokens issued before a restart would be invalidated).
+  // In dev/test, a per-process random value is fine.
+  DOWNLOAD_TOKEN_SECRET: process.env.DOWNLOAD_TOKEN_SECRET ?? (IS_PRODUCTION ? "" : randomSecret()),
+
   NODE_ENV,
   IS_PRODUCTION,
 };
@@ -80,10 +94,22 @@ if (IS_PRODUCTION) {
   if (!env.SCW_TEM_SECRET_KEY) missing.push("SCW_TEM_SECRET_KEY");
   if (env.EMAIL_FROM === "noreply@localhost") missing.push("EMAIL_FROM (still default)");
   if (env.APP_URL.startsWith("http://localhost")) missing.push("APP_URL (still localhost default)");
+  if (!env.DOWNLOAD_TOKEN_SECRET) missing.push("DOWNLOAD_TOKEN_SECRET");
   if (missing.length > 0) {
     throw new Error(
       `Production env misconfigured. Required for auth: ${missing.join(", ")}. ` +
         `In dev (NODE_ENV != production), these can be left unset and email is logged to stdout.`,
+    );
+  }
+
+  // CORS `*` + credentials reflects the request origin, making every cookied
+  // response readable cross-origin. Always a misconfiguration in prod.
+  // See docs/audit/25-external-audit-findings.md §B.3.
+  const corsOrigins = env.CORS_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean);
+  if (corsOrigins.includes("*")) {
+    throw new Error(
+      "Production env misconfigured: CORS_ORIGINS must not contain `*`. " +
+        "Set it to the explicit frontend origin(s), e.g. `https://jtransfer.app`.",
     );
   }
 }

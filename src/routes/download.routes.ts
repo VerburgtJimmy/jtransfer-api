@@ -1,8 +1,9 @@
 import { Elysia, t } from 'elysia';
-import { getCompletedValidTransfer, getFilesByTransferId, getFileById, incrementTransferDownloadCount, verifyTransferPassword } from '../services/file.service';
+import { getCompletedValidTransfer, getTransferById, getFilesByTransferId, getFileById, claimDownloadSlot, verifyTransferPassword } from '../services/file.service';
 import { getPresignedDownloadUrl } from '../services/r2.service';
 import { checkRateLimit, rateLimiters } from '../services/ratelimit.service';
 import { normalizeClientIp } from '../utils/ip';
+import { issueDownloadToken, verifyDownloadToken } from '../auth/downloadTokens';
 
 // nanoid validation pattern (21 chars, URL-safe alphabet)
 const NANOID_PATTERN = /^[A-Za-z0-9_-]{21}$/;
@@ -106,10 +107,18 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
     // Get all files for this transfer
     const files = await getFilesByTransferId(transfer.id);
 
+    // Issue a short-lived "password OK" token so subsequent
+    // /file/:id/url calls under this transfer don't need to re-verify the
+    // password. The token binds transferId + expiry under
+    // DOWNLOAD_TOKEN_SECRET (audit doc 25 §A.4).
+    const accessToken = await issueDownloadToken(transfer.id);
+
     return {
       id: transfer.id,
       expiresAt: transfer.expiresAt,
       passwordRequired: false,
+      accessToken: accessToken.token,
+      accessTokenExpiresAt: accessToken.expiresAt.toISOString(),
       files: files.map(file => ({
         id: file.id,
         encryptedName: file.encryptedName,
@@ -161,18 +170,37 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       return { error: 'File not found' };
     }
 
-    // Verify the transfer is still valid and completed
-    const transfer = await getCompletedValidTransfer(file.transferId);
-    if (!transfer) {
+    // Password gate (audit doc 25 §A.4). Only enforced for *live* transfers,
+    // so an expired/deleted/not-yet-completed transfer always 404s instead
+    // of leaking "this transfer was once password-protected" via a 401.
+    // The token binds transferId under DOWNLOAD_TOKEN_SECRET, so it cannot
+    // be replayed across transfers.
+    const transferRow = await getTransferById(file.transferId);
+    const isLiveProtected =
+      transferRow !== null &&
+      transferRow.isCompleted &&
+      new Date(transferRow.expiresAt) > new Date() &&
+      transferRow.passwordHash !== null;
+    if (isLiveProtected) {
+      const headerToken = request.headers.get('x-transfer-token');
+      if (!headerToken || !(await verifyDownloadToken(headerToken, file.transferId))) {
+        set.status = 401;
+        return { error: 'Password verification required' };
+      }
+    }
+
+    // Atomic claim: gate-check + increment in one UPDATE so a burst of
+    // concurrent downloads on a transfer at (max_downloads - 1) can't all
+    // pass a stale read and overshoot the cap (audit doc 25 §B.1). A null
+    // return collapses "expired / deleted / not completed / cap exhausted"
+    // into the same 404 — the existence oracle policy from doc 20 §4.
+    const claimed = await claimDownloadSlot(file.transferId);
+    if (claimed === null) {
       set.status = 404;
       return { error: 'Transfer has expired' };
     }
 
-    // Generate presigned download URL
     const presigned = await getPresignedDownloadUrl(file.r2Key);
-
-    // Increment download count once the URL has been handed off
-    await incrementTransferDownloadCount(transfer.id);
 
     return {
       downloadUrl: presigned.url,

@@ -17,6 +17,25 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: jtransfer_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TEST_DATABASE_URL: postgresql://test:test@localhost:5432/jtransfer_test
+
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -24,3 +43,17 @@ jobs:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - run: bun test
+      # Schema-drift guard: db:generate must be a no-op on a clean tree.
+      # If Drizzle definitions diverge from the migration journal, generate
+      # produces a new file and `git status` flags it — fail the build so
+      # the divergence is fixed at PR time, not noticed during a deploy.
+      - name: Schema drift check
+        run: |
+          bun run db:generate
+          if [ -n "$(git status --porcelain drizzle)" ]; then
+            echo "::error::Drizzle schema drift detected — db:generate produced a diff."
+            echo "Run 'bun run db:generate' locally and commit the new migration."
+            git status --porcelain drizzle
+            git --no-pager diff drizzle
+            exit 1
+          fi

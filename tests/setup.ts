@@ -1,0 +1,58 @@
+// Global test setup. Runs once before any test file is imported (configured
+// via `bunfig.toml` preload). Responsibilities:
+//
+//   1. Force DATABASE_URL to the test database so production data is never
+//      touched. The operator must export TEST_DATABASE_URL; we refuse to run
+//      otherwise.
+//   2. Stub the R2 client so tests don't make real network calls. Real R2
+//      coverage lives in scripts/auth-smoke.ts (out-of-process).
+//   3. Apply the migration journal to the test database.
+//
+// All in-process integration tests rely on this preload being active. Each
+// test file is expected to call `resetDb()` in `beforeEach` for isolation.
+
+import { mock } from "bun:test";
+
+const testDbUrl = process.env.TEST_DATABASE_URL;
+if (!testDbUrl) {
+  throw new Error(
+    "TEST_DATABASE_URL must be set to run the test suite. " +
+      "Point it at a disposable Postgres database (NOT the dev DB). " +
+      "Example: TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/jtransfer_test bun test",
+  );
+}
+if (testDbUrl === process.env.DATABASE_URL) {
+  throw new Error(
+    "TEST_DATABASE_URL must differ from DATABASE_URL. The test harness " +
+      "truncates all tables between tests; pointing at the dev/prod DB would destroy data.",
+  );
+}
+
+process.env.DATABASE_URL = testDbUrl;
+// Tests run against a non-production env regardless of caller env.
+process.env.NODE_ENV = "test";
+// Pin a known APP_URL for Origin checks.
+process.env.APP_URL = process.env.APP_URL ?? "http://localhost:5173";
+process.env.CORS_ORIGINS = process.env.CORS_ORIGINS ?? "http://localhost:5173";
+// R2 vars are required by env.ts but never used (the module is stubbed below).
+process.env.R2_ENDPOINT = process.env.R2_ENDPOINT ?? "http://test.invalid";
+process.env.R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID ?? "test";
+process.env.R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY ?? "test";
+process.env.R2_BUCKET_NAME = process.env.R2_BUCKET_NAME ?? "test";
+// Force the email service into log-only mode so tests never hit Scaleway TEM,
+// even when the operator's .env carries live credentials.
+process.env.SCW_TEM_PROJECT_ID = "";
+process.env.SCW_TEM_SECRET_KEY = "";
+
+// Default mock: presigned-URL handouts succeed, deletes are no-ops, and
+// HeadObject pretends the upload landed at the size we have on the file
+// row in the DB. Tests that need to exercise the missing-upload or
+// size-mismatch failure paths (audit doc 25 §A.3) call `mock.module` again
+// in their own file to override `headObject`, then re-apply `defaultR2Mock`
+// in `afterEach` to avoid leaking the override into later test files (Bun
+// runs them in the same process).
+import { defaultR2Mock } from "./helpers/r2-mock";
+mock.module("../src/services/r2.service", () => defaultR2Mock());
+
+// Migrations run lazily on first import of the db helper. Keeping the
+// migration side-effect out of this file lets tests opt in explicitly.

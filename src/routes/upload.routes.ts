@@ -1,10 +1,11 @@
 import { Elysia, t } from 'elysia';
-import { createTransfer, completeTransfer, abortTransfer, logCompletedTransfer, createFile, getTransferTotalSize, getValidTransfer, getTransferById } from '../services/file.service';
-import { getPresignedUploadUrl } from '../services/r2.service';
+import { createTransfer, completeTransfer, abortTransfer, logCompletedTransfer, createFile, getTransferTotalSize, getValidTransfer, getTransferById, getFilesByTransferId } from '../services/file.service';
+import { getPresignedUploadUrl, headObject } from '../services/r2.service';
 import { checkRateLimit, checkVolumeLimit, rateLimiters } from '../services/ratelimit.service';
 import { env } from '../config/env';
 import { normalizeClientIp } from '../utils/ip';
 import { exceedsTotalLimit } from '../utils/limits';
+import { authPlugin } from '../auth/middleware';
 
 // nanoid validation pattern (21 chars, URL-safe alphabet)
 const NANOID_PATTERN = /^[A-Za-z0-9_-]{21}$/;
@@ -15,8 +16,13 @@ function isValidNanoId(id: string): boolean {
 const MIN_PASSWORD_LENGTH = 8;
 
 export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
-  // Create a new transfer (group of files)
-  .post('/create-transfer', async ({ body, request, set }) => {
+  .use(authPlugin)
+
+  // Create a new transfer (group of files). If a session is present,
+  // the transfer is owned by that user; otherwise it's anonymous
+  // (user_id NULL). Ownership is set at creation and never re-assigned.
+  // See docs/audit/20-transfer-ownership.md §2.
+  .post('/create-transfer', async ({ body, request, me, set }) => {
     const ip = normalizeClientIp(request.headers.get('cf-connecting-ip'), request.headers.get('x-forwarded-for'));
 
     // Per-minute rate limit
@@ -56,7 +62,7 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       return { error: 'maxDownloads must be between 1 and 100.' };
     }
 
-    const transfer = await createTransfer(expiresInHours, password, maxDownloads);
+    const transfer = await createTransfer(expiresInHours, password, maxDownloads, me?.id ?? null);
 
     return {
       transferId: transfer.id,
@@ -71,7 +77,7 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
   })
 
   // Request a presigned URL for direct upload to R2
-  .post('/request-upload-url', async ({ body, request, set }) => {
+  .post('/request-upload-url', async ({ body, request, me, set }) => {
     const ip = normalizeClientIp(request.headers.get('cf-connecting-ip'), request.headers.get('x-forwarded-for'));
 
     const rateLimit = await checkRateLimit(ip, rateLimiters.upload);
@@ -91,6 +97,13 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
 
     const transfer = await getValidTransfer(transferId);
     if (!transfer) {
+      set.status = 404;
+      return { error: 'Transfer not found or has expired' };
+    }
+
+    // Owner-only on owned transfers; non-owner returns 404 (not 403) to
+    // avoid leaking existence. See docs/audit/20-transfer-ownership.md §4.
+    if (transfer.userId !== null && transfer.userId !== me?.id) {
       set.status = 404;
       return { error: 'Transfer not found or has expired' };
     }
@@ -128,10 +141,13 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       mimeType: contentType || 'application/octet-stream'
     });
 
-    // Generate presigned upload URL
+    // Generate presigned upload URL. Binding ContentLength here means R2
+    // rejects any PUT whose body size differs from `size` — closes the
+    // limit-bypass path called out in audit doc 25 §A.2.
     const presigned = await getPresignedUploadUrl(
       file.r2Key,
-      'application/octet-stream' // Always octet-stream since content is encrypted
+      'application/octet-stream', // Always octet-stream since content is encrypted
+      size,
     );
 
     return {
@@ -151,7 +167,7 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
   })
 
   // Complete the transfer (called after all files are uploaded)
-  .post('/complete', async ({ body, set }) => {
+  .post('/complete', async ({ body, me, set }) => {
     const { transferId } = body;
 
     // Validate transferId format
@@ -164,6 +180,33 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
     if (!transfer) {
       set.status = 404;
       return { error: 'Transfer not found or has expired' };
+    }
+
+    // Owner-only on owned transfers (see docs/audit/20 §4).
+    if (transfer.userId !== null && transfer.userId !== me?.id) {
+      set.status = 404;
+      return { error: 'Transfer not found or has expired' };
+    }
+
+    // Verify every declared file is actually in storage at the expected
+    // size before marking the transfer live. Without this the client
+    // could call /complete after a partial or skipped upload and leave
+    // recipients with broken downloads (audit doc 25 §A.3).
+    const transferFiles = await getFilesByTransferId(transferId);
+    if (transferFiles.length === 0) {
+      set.status = 409;
+      return { error: 'Transfer has no files to complete.' };
+    }
+    for (const file of transferFiles) {
+      const head = await headObject(file.r2Key);
+      if (!head) {
+        set.status = 409;
+        return { error: 'Upload incomplete — one or more files are missing.' };
+      }
+      if (head.size !== file.size) {
+        set.status = 409;
+        return { error: 'Upload incomplete — file size mismatch.' };
+      }
     }
 
     await completeTransfer(transferId);
@@ -180,7 +223,7 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
   })
 
   // Abort an in-progress transfer — deletes any already-uploaded files from R2
-  .post('/abort', async ({ body, set }) => {
+  .post('/abort', async ({ body, me, set }) => {
     const { transferId } = body;
 
     if (!isValidNanoId(transferId)) {
@@ -191,6 +234,12 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
     // Only allow aborting incomplete transfers (completed ones are live)
     const transfer = await getTransferById(transferId);
     if (!transfer || transfer.isDeleted) {
+      set.status = 404;
+      return { error: 'Transfer not found' };
+    }
+
+    // Owner-only on owned transfers (see docs/audit/20 §4).
+    if (transfer.userId !== null && transfer.userId !== me?.id) {
       set.status = 404;
       return { error: 'Transfer not found' };
     }

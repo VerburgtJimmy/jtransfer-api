@@ -6,3 +6,17 @@ commit-msg:
   commands:
     commitlint:
       run: bunx commitlint --edit {1}
+
+pre-commit:
+  commands:
+    block-env-files:
+      # Refuse commits that include a .env file. Secrets belong in
+      # /etc/jtransfer/ on the VPS, never in git (see docs/runbooks/secrets.md).
+      run: |
+        files="{staged_files}"
+        if printf '%s\n' "$files" | grep -E '(^|/)\.env(\.|$)' >/dev/null; then
+          echo "✖ refusing commit: .env file is staged"
+          printf '%s\n' "$files" | grep -E '(^|/)\.env(\.|$)'
+          echo "  unstage with: git restore --staged <file>"
+          exit 1
+        fi

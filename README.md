@@ -80,6 +80,27 @@ bun run dev
 
 The API will be available at `http://localhost:3000`.
 
+## Tests
+
+Unit tests run in-process; integration tests require a disposable Postgres database (the harness truncates all tables between tests).
+
+```bash
+# One-time: create a dedicated test database
+createdb jtransferdb_test
+
+# Run the full suite
+TEST_DATABASE_URL=postgresql://user:password@localhost:5432/jtransferdb_test bun test
+```
+
+`TEST_DATABASE_URL` must differ from `DATABASE_URL` — the harness refuses to run otherwise. R2 calls are stubbed; no network I/O.
+
+For the magic-link auth flow, run the out-of-process smoke script (requires the dev API running):
+
+```bash
+bun run dev               # in one shell
+bun run auth:smoke        # in another
+```
+
 ## API Endpoints
 
 ### Upload

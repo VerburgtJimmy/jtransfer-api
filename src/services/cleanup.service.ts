@@ -1,5 +1,5 @@
 import { lt, or, and, isNotNull } from 'drizzle-orm';
-import { getExpiredTransfers, getAbandonedTransfers, deleteExpiredTransfer, abortTransfer } from './file.service';
+import { getExpiredTransfers, getAbandonedTransfers, getSoftDeletedTransfers, deleteExpiredTransfer, abortTransfer, purgeOwnerDeletedTransfer } from './file.service';
 import { db } from '../db';
 import { authEvents, magicLinkTokens, sessions } from '../db/schema';
 
@@ -29,6 +29,24 @@ export async function cleanupAbandonedTransfers(): Promise<number> {
       count++;
     } catch (error) {
       console.error(`[cleanup] Failed to delete abandoned transfer ${transfer.id}:`, error);
+    }
+  }
+
+  return count;
+}
+
+// Owner-soft-deleted transfers (DELETE /api/me/transfers/:id). Reuse the
+// expired-deletion path: removes R2 objects and hard-deletes the row.
+export async function cleanupSoftDeletedTransfers(): Promise<number> {
+  const rows = await getSoftDeletedTransfers();
+  let count = 0;
+
+  for (const transfer of rows) {
+    try {
+      await purgeOwnerDeletedTransfer(transfer);
+      count++;
+    } catch (error) {
+      console.error(`[cleanup] Failed to delete soft-deleted transfer ${transfer.id}:`, error);
     }
   }
 
@@ -78,8 +96,9 @@ export function startCleanupJob(): void {
   const runCleanup = async () => {
     const expired = await cleanupExpiredTransfers();
     const abandoned = await cleanupAbandonedTransfers();
-    if (expired + abandoned > 0) {
-      console.log(`[cleanup] Deleted ${expired} expired, ${abandoned} abandoned transfers`);
+    const softDeleted = await cleanupSoftDeletedTransfers();
+    if (expired + abandoned + softDeleted > 0) {
+      console.log(`[cleanup] Deleted ${expired} expired, ${abandoned} abandoned, ${softDeleted} soft-deleted transfers`);
     }
     try {
       const auth = await cleanupAuthArtefacts();

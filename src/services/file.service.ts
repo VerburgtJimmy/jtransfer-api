@@ -1,4 +1,4 @@
-import { eq, and, lt, sql } from 'drizzle-orm';
+import { eq, and, gt, lt, desc, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db } from '../db';
 import { transfers, files, transferEvents, type NewTransfer, type NewFile, type Transfer, type File } from '../db/schema';
@@ -7,7 +7,8 @@ import { transfers, files, transferEvents, type NewTransfer, type NewFile, type 
 export async function createTransfer(
   expiresInHours: number,
   password?: string,
-  maxDownloads?: number
+  maxDownloads?: number,
+  userId?: string | null
 ): Promise<Transfer> {
   const id = nanoid();
   const expiresAt = new Date();
@@ -21,7 +22,8 @@ export async function createTransfer(
     expiresAt,
     passwordHash,
     maxDownloads: maxDownloads ?? null,
-    isCompleted: false
+    isCompleted: false,
+    userId: userId ?? null,
   }).returning();
 
   return transfer;
@@ -84,11 +86,33 @@ export async function getCompletedValidTransfer(id: string): Promise<Transfer | 
   return transfer;
 }
 
-export async function incrementTransferDownloadCount(id: string): Promise<void> {
-  await db
+// Atomic "may I download?" gate. Increments download_count by 1 *only* when
+// the transfer is still live, completed, not soft-deleted, and either has no
+// download cap or is strictly below it — all in a single UPDATE so two
+// concurrent calls cannot both pass a stale read of the count and overshoot
+// `max_downloads` (audit doc 25 §B.1).
+//
+// Returns the new download_count on success, or null when the transfer is no
+// longer downloadable for any of the reasons above. Callers cannot
+// distinguish *why* the claim failed; that's by design — the
+// (expired / deleted / cap-reached) states collapse into a single 404 at
+// the route layer per doc 20 §4.
+export async function claimDownloadSlot(transferId: string): Promise<number | null> {
+  const updated = await db
     .update(transfers)
     .set({ downloadCount: sql`${transfers.downloadCount} + 1` })
-    .where(eq(transfers.id, id));
+    .where(
+      and(
+        eq(transfers.id, transferId),
+        eq(transfers.isDeleted, false),
+        eq(transfers.isCompleted, true),
+        gt(transfers.expiresAt, new Date()),
+        sql`(${transfers.maxDownloads} IS NULL OR ${transfers.downloadCount} < ${transfers.maxDownloads})`,
+      ),
+    )
+    .returning({ downloadCount: transfers.downloadCount });
+
+  return updated[0]?.downloadCount ?? null;
 }
 
 async function logTransferEvent(
@@ -168,6 +192,110 @@ export async function markTransferAsDeleted(id: string): Promise<void> {
     .update(transfers)
     .set({ isDeleted: true })
     .where(eq(transfers.id, id));
+}
+
+// Owner-scoped list with per-row file aggregates. Cursor is the createdAt of
+// the last row from the previous page (ISO string). See docs/audit/20 §5.
+export interface OwnedTransferSummary {
+  id: string;
+  createdAt: Date;
+  expiresAt: Date;
+  fileCount: number;
+  totalBytes: number;
+  downloadCount: number;
+  isCompleted: boolean;
+  hasPassword: boolean;
+}
+
+export async function listTransfersForUser(
+  userId: string,
+  cursor: Date | null,
+  limit: number
+): Promise<OwnedTransferSummary[]> {
+  const whereClauses = [
+    eq(transfers.userId, userId),
+    eq(transfers.isDeleted, false),
+  ];
+  if (cursor) {
+    whereClauses.push(lt(transfers.createdAt, cursor));
+  }
+
+  const rows = await db
+    .select({
+      id: transfers.id,
+      createdAt: transfers.createdAt,
+      expiresAt: transfers.expiresAt,
+      downloadCount: transfers.downloadCount,
+      isCompleted: transfers.isCompleted,
+      passwordHash: transfers.passwordHash,
+      fileCount: sql<number>`coalesce(count(${files.id}) filter (where ${files.isDeleted} = false), 0)`,
+      totalBytes: sql<number>`coalesce(sum(${files.size}) filter (where ${files.isDeleted} = false), 0)`,
+    })
+    .from(transfers)
+    .leftJoin(files, eq(files.transferId, transfers.id))
+    .where(and(...whereClauses))
+    .groupBy(transfers.id)
+    .orderBy(desc(transfers.createdAt))
+    .limit(limit);
+
+  return rows.map((r) => ({
+    id: r.id,
+    createdAt: r.createdAt,
+    expiresAt: r.expiresAt,
+    downloadCount: r.downloadCount,
+    isCompleted: r.isCompleted,
+    hasPassword: r.passwordHash !== null,
+    // postgres.js returns bigint aggregates as strings — coerce explicitly
+    fileCount: Number(r.fileCount ?? 0),
+    totalBytes: Number(r.totalBytes ?? 0),
+  }));
+}
+
+// Returns true when a row was soft-deleted, false when not found or not owned
+// (caller maps both to 404 per docs/audit/20 §4 to avoid an existence oracle).
+export async function softDeleteOwnedTransfer(userId: string, transferId: string): Promise<boolean> {
+  const updated = await db
+    .update(transfers)
+    .set({ isDeleted: true })
+    .where(
+      and(
+        eq(transfers.id, transferId),
+        eq(transfers.userId, userId),
+        eq(transfers.isDeleted, false),
+      )
+    )
+    .returning({ id: transfers.id });
+
+  return updated.length > 0;
+}
+
+// Owner-soft-deleted rows awaiting storage cleanup + hard-delete by the
+// background job. Distinct from expired/abandoned pickups.
+export async function getSoftDeletedTransfers(): Promise<Transfer[]> {
+  return db
+    .select()
+    .from(transfers)
+    .where(eq(transfers.isDeleted, true));
+}
+
+// Storage cleanup + hard-delete for an owner-soft-deleted transfer. Logged
+// to transfer_events as 'aborted' (user-initiated termination). User-attributed
+// audit is logged separately to auth_events at the DELETE handler. See doc 20 §7.
+export async function purgeOwnerDeletedTransfer(transfer: Transfer): Promise<void> {
+  const { deleteFromR2 } = await import('./r2.service');
+  const transferFiles = await getFilesForTransfer(transfer.id);
+  const totalBytes = transferFiles.reduce((sum, f) => sum + f.size, 0);
+
+  for (const file of transferFiles) {
+    try {
+      await deleteFromR2(file.r2Key);
+    } catch (err) {
+      console.error(`[cleanup] Failed to delete R2 object ${file.r2Key}:`, err);
+    }
+  }
+
+  await logTransferEvent('aborted', transfer, transferFiles.length, totalBytes);
+  await hardDeleteTransfer(transfer.id);
 }
 
 // File operations

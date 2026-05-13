@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { pgTable, varchar, bigint, timestamp, integer, boolean, serial, uniqueIndex, index, inet, text } from 'drizzle-orm/pg-core';
 
 export const transfers = pgTable('transfers', {
@@ -8,8 +9,14 @@ export const transfers = pgTable('transfers', {
   maxDownloads: integer('max_downloads'), // NULL = unlimited
   isDeleted: boolean('is_deleted').default(false).notNull(),
   isCompleted: boolean('is_completed').default(false).notNull(),
-  passwordHash: varchar('password_hash', { length: 255 }) // NULL = no password
-});
+  passwordHash: varchar('password_hash', { length: 255 }), // NULL = no password
+  // NULL = anonymous transfer. See docs/audit/20-transfer-ownership.md.
+  userId: varchar('user_id', { length: 21 }).references(() => users.id),
+}, (table) => ({
+  userIdIdx: index('transfers_user_id_idx')
+    .on(table.userId)
+    .where(sql`${table.userId} IS NOT NULL`),
+}));
 
 export const files = pgTable('files', {
   id: varchar('id', { length: 21 }).primaryKey(), // nanoid

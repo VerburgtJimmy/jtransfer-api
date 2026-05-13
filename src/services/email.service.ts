@@ -78,6 +78,81 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+interface SendAccountDeletedInput {
+  to: string;
+}
+
+function buildAccountDeletedSubject(): string {
+  return "Your JTransfer account was deleted";
+}
+
+function buildAccountDeletedText({ to }: SendAccountDeletedInput): string {
+  return [
+    "Your JTransfer account and all associated transfers were permanently deleted just now.",
+    "",
+    "If you did this, no further action is needed. If you did not request this deletion, your account may have been accessed by someone else — we recommend rotating the credentials on the email address used to sign in (" +
+      to +
+      "), and reviewing other services where you used the same address.",
+    "",
+    "We don't retain copies. The account and its files cannot be restored.",
+    "",
+    "— JTransfer",
+  ].join("\n");
+}
+
+function buildAccountDeletedHtml({ to }: SendAccountDeletedInput): string {
+  return [
+    "<!doctype html>",
+    '<html lang="en"><head><meta charset="utf-8"><title>Your JTransfer account was deleted</title></head>',
+    '<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5;color:#111;max-width:560px;margin:24px auto;padding:0 16px;">',
+    '  <h1 style="font-size:20px;margin:0 0 16px;">Your JTransfer account was deleted</h1>',
+    "  <p>Your JTransfer account and all associated transfers were permanently deleted just now.</p>",
+    "  <p>If you did this, no further action is needed. If you did not request this deletion, your account may have been accessed by someone else — we recommend rotating the credentials on the email address used to sign in (<strong>" +
+      escapeHtml(to) +
+      "</strong>), and reviewing other services where you used the same address.</p>",
+    '  <p style="font-size:13px;color:#555;">We don\'t retain copies. The account and its files cannot be restored.</p>',
+    "</body></html>",
+  ].join("\n");
+}
+
+export async function sendAccountDeletedNotification(input: SendAccountDeletedInput): Promise<void> {
+  if (!isConfigured()) {
+    console.log(
+      `[email] SCW_TEM not configured — logging account-deleted notification instead.\n  to: ${input.to}`,
+    );
+    return;
+  }
+
+  const body = {
+    from: { email: env.EMAIL_FROM, name: env.EMAIL_FROM_NAME },
+    to: [{ email: input.to }],
+    project_id: env.SCW_TEM_PROJECT_ID,
+    subject: buildAccountDeletedSubject(),
+    text: buildAccountDeletedText(input),
+    html: buildAccountDeletedHtml(input),
+    ...(env.EMAIL_REPLY_TO
+      ? { additional_headers: [{ key: "Reply-To", value: env.EMAIL_REPLY_TO }] }
+      : {}),
+  };
+
+  const response = await fetch(SCW_TEM_ENDPOINT(env.SCW_TEM_REGION), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Auth-Token": env.SCW_TEM_SECRET_KEY,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => "<unreadable>");
+    console.error(
+      `[email] Scaleway TEM account-deleted send failed (${response.status}) for ${input.to}: ${errorBody.slice(0, 500)}`,
+    );
+    throw new Error(`Email send failed: ${response.status}`);
+  }
+}
+
 export async function sendMagicLink(input: SendMagicLinkInput): Promise<void> {
   if (!isConfigured()) {
     console.log(
