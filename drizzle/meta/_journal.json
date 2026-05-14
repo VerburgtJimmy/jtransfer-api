@@ -43,6 +43,13 @@
       "when": 1778768677202,
       "tag": "0005_session_authenticator_id",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1778778561861,
+      "tag": "0006_light_aqueduct",
+      "breakpoints": true
     }
   ]
 }

@@ -9,7 +9,7 @@ import { logAuthEvent } from "../auth/events";
 import { buildAccountExport, eraseAccount } from "../auth/users";
 import { SESSION_COOKIE_NAME, SESSION_COOKIE_OPTIONS } from "../auth/sessions";
 import { normaliseEmail } from "../auth/tokens";
-import { listTransfersForUser, softDeleteOwnedTransfer } from "../services/file.service";
+import { getFileMetadataForOwnedTransfer, listTransfersForUser, softDeleteOwnedTransfer } from "../services/file.service";
 import { sendAccountDeletedNotification } from "../services/email.service";
 import { checkRateLimit, rateLimiters } from "../services/ratelimit.service";
 import { ipForStorage, normalizeClientIp } from "../utils/ip";
@@ -61,6 +61,42 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
         cursor: t.Optional(t.String({ maxLength: 64 })),
         limit: t.Optional(t.String({ maxLength: 4 })),
       }),
+    },
+  )
+
+  // Per-file metadata for an owned transfer (encrypted filename + IV +
+  // size + mime). Used by the dashboard to decrypt filenames after the
+  // vault key has unwrapped K_transfer client-side. Not-owned / not-found
+  // both collapse to 404 (D-088). See docs/audit/28 §3.
+  .get(
+    "/transfers/:id/files",
+    async ({ me, params, set }) => {
+      if (!me) {
+        set.status = 401;
+        return { error: "Not authenticated" };
+      }
+      const listLimit = await checkRateLimit(me.id, rateLimiters.meTransfersList);
+      if (!listLimit.allowed) {
+        set.status = 429;
+        set.headers["Retry-After"] = String(listLimit.resetIn);
+        return { error: "Rate limit exceeded. Try again later." };
+      }
+
+      if (!NANOID_PATTERN.test(params.id)) {
+        set.status = 404;
+        return { error: "Not found" };
+      }
+
+      const files = await getFileMetadataForOwnedTransfer(me.id, params.id);
+      if (files === null) {
+        set.status = 404;
+        return { error: "Not found" };
+      }
+
+      return { files };
+    },
+    {
+      params: t.Object({ id: t.String({ minLength: 21, maxLength: 21 }) }),
     },
   )
 

@@ -29,10 +29,26 @@ export async function createTransfer(
   return transfer;
 }
 
-export async function completeTransfer(id: string): Promise<void> {
+// Marks the transfer live. Optional `vaultWrap` writes the per-transfer
+// vault columns in the same UPDATE — caller has already validated the
+// blob layout (60 bytes) and that `wrapCredentialId` belongs to the
+// signed-in user. Anonymous and unvaulted callers leave both NULL.
+// See docs/audit/28-dashboard-transfer-key-vault.md §4.
+export async function completeTransfer(
+  id: string,
+  vaultWrap?: { wrappedKey: Uint8Array; wrapCredentialId: Uint8Array }
+): Promise<void> {
   await db
     .update(transfers)
-    .set({ isCompleted: true })
+    .set({
+      isCompleted: true,
+      ...(vaultWrap
+        ? {
+            wrappedKey: vaultWrap.wrappedKey,
+            wrapCredentialId: vaultWrap.wrapCredentialId,
+          }
+        : {}),
+    })
     .where(eq(transfers.id, id));
 }
 
@@ -196,6 +212,8 @@ export async function markTransferAsDeleted(id: string): Promise<void> {
 
 // Owner-scoped list with per-row file aggregates. Cursor is the createdAt of
 // the last row from the previous page (ISO string). See docs/audit/20 §5.
+// `wrappedKey` + `wrapCredentialId` are base64url-encoded when present and
+// NULL when the row is unvaulted. See docs/audit/28 §4 + §5.
 export interface OwnedTransferSummary {
   id: string;
   createdAt: Date;
@@ -205,6 +223,14 @@ export interface OwnedTransferSummary {
   downloadCount: number;
   isCompleted: boolean;
   hasPassword: boolean;
+  wrappedKey: string | null;
+  wrapCredentialId: string | null;
+}
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+  // Node/Bun Buffer round-trips Uint8Array losslessly. base64url is the
+  // wire format for vault blobs per docs/audit/28 §5.
+  return Buffer.from(bytes).toString('base64url');
 }
 
 export async function listTransfersForUser(
@@ -228,6 +254,8 @@ export async function listTransfersForUser(
       downloadCount: transfers.downloadCount,
       isCompleted: transfers.isCompleted,
       passwordHash: transfers.passwordHash,
+      wrappedKey: transfers.wrappedKey,
+      wrapCredentialId: transfers.wrapCredentialId,
       fileCount: sql<number>`coalesce(count(${files.id}) filter (where ${files.isDeleted} = false), 0)`,
       totalBytes: sql<number>`coalesce(sum(${files.size}) filter (where ${files.isDeleted} = false), 0)`,
     })
@@ -245,9 +273,57 @@ export async function listTransfersForUser(
     downloadCount: r.downloadCount,
     isCompleted: r.isCompleted,
     hasPassword: r.passwordHash !== null,
+    wrappedKey: r.wrappedKey ? bytesToBase64Url(r.wrappedKey) : null,
+    wrapCredentialId: r.wrapCredentialId ? bytesToBase64Url(r.wrapCredentialId) : null,
     // postgres.js returns bigint aggregates as strings — coerce explicitly
     fileCount: Number(r.fileCount ?? 0),
     totalBytes: Number(r.totalBytes ?? 0),
+  }));
+}
+
+// Per-file metadata for an owned transfer. Used by the dashboard to decrypt
+// filenames after unwrapping K_transfer. Returns null when the transfer
+// does not exist or is not owned by `userId`; collapses both to a 404
+// at the route layer (D-088). See docs/audit/28 §3.
+export interface OwnedTransferFileMetadata {
+  id: string;
+  encryptedName: string;
+  encryptedNameIv: string;
+  size: number;
+  mimeType: string | null;
+}
+
+export async function getFileMetadataForOwnedTransfer(
+  userId: string,
+  transferId: string
+): Promise<OwnedTransferFileMetadata[] | null> {
+  const [transfer] = await db
+    .select({ id: transfers.id, userId: transfers.userId, isDeleted: transfers.isDeleted })
+    .from(transfers)
+    .where(eq(transfers.id, transferId))
+    .limit(1);
+
+  if (!transfer || transfer.isDeleted || transfer.userId !== userId) {
+    return null;
+  }
+
+  const rows = await db
+    .select({
+      id: files.id,
+      encryptedName: files.encryptedName,
+      encryptedNameIv: files.encryptedNameIv,
+      size: files.size,
+      mimeType: files.mimeType,
+    })
+    .from(files)
+    .where(and(eq(files.transferId, transferId), eq(files.isDeleted, false)));
+
+  return rows.map((r) => ({
+    id: r.id,
+    encryptedName: r.encryptedName,
+    encryptedNameIv: r.encryptedNameIv,
+    size: Number(r.size),
+    mimeType: r.mimeType,
   }));
 }
 

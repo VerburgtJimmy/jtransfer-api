@@ -6,6 +6,7 @@ import { env } from '../config/env';
 import { normalizeClientIp } from '../utils/ip';
 import { exceedsTotalLimit } from '../utils/limits';
 import { authPlugin } from '../auth/middleware';
+import { userOwnsPrfCredential } from '../auth/webauthn';
 
 // nanoid validation pattern (21 chars, URL-safe alphabet)
 const NANOID_PATTERN = /^[A-Za-z0-9_-]{21}$/;
@@ -14,6 +15,27 @@ function isValidNanoId(id: string): boolean {
 }
 
 const MIN_PASSWORD_LENGTH = 8;
+
+// Vault wrap blob is `wrap_iv(12) || ciphertext(32) || tag(16)` per
+// docs/audit/28 §5. Exact byte count gated server-side so the column
+// stays normalised (the client cannot smuggle arbitrary bytes through).
+const WRAPPED_KEY_BYTES = 60;
+// Credential IDs are typically 16–128 bytes depending on authenticator.
+// Cap at 256 to bound storage; below 16 is implausible for real
+// credentials and rejected as a sanity floor.
+const MIN_CREDENTIAL_ID_BYTES = 16;
+const MAX_CREDENTIAL_ID_BYTES = 256;
+
+function decodeBase64Url(input: string): Uint8Array | null {
+  // base64url uses '-_' and no padding; strict regex stops malformed payloads
+  // from being silently coerced by Buffer's lenient decoder.
+  if (!/^[A-Za-z0-9_-]+$/.test(input)) return null;
+  try {
+    return new Uint8Array(Buffer.from(input, 'base64url'));
+  } catch {
+    return null;
+  }
+}
 
 export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
   .use(authPlugin)
@@ -168,7 +190,7 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
 
   // Complete the transfer (called after all files are uploaded)
   .post('/complete', async ({ body, me, set }) => {
-    const { transferId } = body;
+    const { transferId, wrappedKey, wrapCredentialId } = body;
 
     // Validate transferId format
     if (!isValidNanoId(transferId)) {
@@ -186,6 +208,44 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
     if (transfer.userId !== null && transfer.userId !== me?.id) {
       set.status = 404;
       return { error: 'Transfer not found or has expired' };
+    }
+
+    // Vault wrap (Phase F / D-113): both blobs must arrive together or
+    // not at all; transfer must be signed-in-owned; credential must be a
+    // PRF-capable credential owned by the same user. See docs/audit/28 §3.
+    let vaultWrap: { wrappedKey: Uint8Array; wrapCredentialId: Uint8Array } | undefined;
+    const hasWrappedKey = typeof wrappedKey === 'string' && wrappedKey.length > 0;
+    const hasWrapCred = typeof wrapCredentialId === 'string' && wrapCredentialId.length > 0;
+    if (hasWrappedKey !== hasWrapCred) {
+      set.status = 400;
+      return { error: 'wrappedKey and wrapCredentialId must be provided together.' };
+    }
+    if (hasWrappedKey && hasWrapCred) {
+      if (!me || transfer.userId !== me.id) {
+        // Anonymous transfers and not-owned transfers cannot vault.
+        set.status = 400;
+        return { error: 'Vault wrap requires an owned signed-in transfer.' };
+      }
+      const wrappedKeyBytes = decodeBase64Url(wrappedKey);
+      const wrapCredentialIdBytes = decodeBase64Url(wrapCredentialId);
+      if (!wrappedKeyBytes || wrappedKeyBytes.length !== WRAPPED_KEY_BYTES) {
+        set.status = 400;
+        return { error: 'wrappedKey must be 60 bytes (base64url).' };
+      }
+      if (
+        !wrapCredentialIdBytes ||
+        wrapCredentialIdBytes.length < MIN_CREDENTIAL_ID_BYTES ||
+        wrapCredentialIdBytes.length > MAX_CREDENTIAL_ID_BYTES
+      ) {
+        set.status = 400;
+        return { error: 'wrapCredentialId is malformed.' };
+      }
+      const owned = await userOwnsPrfCredential(me.id, wrapCredentialIdBytes);
+      if (!owned) {
+        set.status = 400;
+        return { error: 'wrapCredentialId is not a recognised passkey on this account.' };
+      }
+      vaultWrap = { wrappedKey: wrappedKeyBytes, wrapCredentialId: wrapCredentialIdBytes };
     }
 
     // Verify every declared file is actually in storage at the expected
@@ -209,7 +269,7 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       }
     }
 
-    await completeTransfer(transferId);
+    await completeTransfer(transferId, vaultWrap);
     logCompletedTransfer(transfer).catch(() => {}); // fire-and-forget, never blocks response
 
     return {
@@ -218,7 +278,9 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
     };
   }, {
     body: t.Object({
-      transferId: t.String({ minLength: 21, maxLength: 21 })
+      transferId: t.String({ minLength: 21, maxLength: 21 }),
+      wrappedKey: t.Optional(t.String({ maxLength: 128 })),
+      wrapCredentialId: t.Optional(t.String({ maxLength: 512 })),
     })
   })
 

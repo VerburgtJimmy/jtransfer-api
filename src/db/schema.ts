@@ -20,6 +20,12 @@ export const transfers = pgTable('transfers', {
   passwordHash: varchar('password_hash', { length: 255 }), // NULL = no password
   // NULL = anonymous transfer. See docs/audit/20-transfer-ownership.md.
   userId: varchar('user_id', { length: 21 }).references(() => users.id),
+  // Vault wrap layer — Phase F (doc 28). Both NULL on anonymous and on
+  // signed-in-without-vault rows; both set together on vaulted rows. Per D-113.
+  // wrappedKey wire layout: wrap_iv(12B) || ciphertext(32B) || tag(16B) = 60 bytes.
+  // wrapCredentialId stays opaque bytes — no hard FK, see doc 28 §4.
+  wrappedKey: bytea('wrapped_key'),
+  wrapCredentialId: bytea('wrap_credential_id'),
 }, (table) => ({
   userIdIdx: index('transfers_user_id_idx')
     .on(table.userId)

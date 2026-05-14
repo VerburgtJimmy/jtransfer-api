@@ -31,6 +31,7 @@ import {
 import { db } from "../db";
 import {
   authenticators,
+  transfers,
   webauthnChallenges,
   type Authenticator,
 } from "../db/schema";
@@ -295,6 +296,63 @@ export async function listAuthenticatorsForUser(userId: string): Promise<Authent
     .select()
     .from(authenticators)
     .where(eq(authenticators.userId, userId));
+}
+
+/**
+ * Number of vaulted transfers wrapped under a given authenticator (matched
+ * by raw credential_id, not authenticator pk). Used by the dashboard's
+ * passkey-delete confirmation to surface "N transfers will lose filename
+ * visibility" per D-117. Soft-deleted transfers are excluded. Returns 0
+ * if the authenticator does not belong to `userId` (defensive).
+ */
+export async function countWrappedTransfersForAuthenticator(input: {
+  authenticatorId: string;
+  userId: string;
+}): Promise<number> {
+  const [auth] = await db
+    .select({ credentialId: authenticators.credentialId })
+    .from(authenticators)
+    .where(and(
+      eq(authenticators.id, input.authenticatorId),
+      eq(authenticators.userId, input.userId),
+    ))
+    .limit(1);
+  if (!auth) return 0;
+
+  // Count via a small targeted select rather than COUNT(*) so the SQL stays
+  // legible alongside the rest of webauthn.ts. Transfers tables are tiny per
+  // user (free tier) — no perf concern.
+  const rows = await db
+    .select({ id: transfers.id })
+    .from(transfers)
+    .where(and(
+      eq(transfers.userId, input.userId),
+      eq(transfers.wrapCredentialId, auth.credentialId),
+      eq(transfers.isDeleted, false),
+    ));
+  return rows.length;
+}
+
+/**
+ * True iff the given raw credential id belongs to `userId` and supports PRF.
+ * Used at /upload/complete to validate that the wrap-credential the client
+ * sent is one of the user's own PRF-capable credentials before we accept
+ * the wrap. See docs/audit/28 §3.
+ */
+export async function userOwnsPrfCredential(
+  userId: string,
+  credentialId: Uint8Array,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: authenticators.id })
+    .from(authenticators)
+    .where(and(
+      eq(authenticators.userId, userId),
+      eq(authenticators.credentialId, credentialId),
+      eq(authenticators.supportsPrf, true),
+    ))
+    .limit(1);
+  return row != null;
 }
 
 /**

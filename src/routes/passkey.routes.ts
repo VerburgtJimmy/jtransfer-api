@@ -27,6 +27,7 @@ import {
 import {
   beginAuthentication,
   beginRegistration,
+  countWrappedTransfersForAuthenticator,
   deleteAuthenticator,
   finishAuthentication,
   finishRegistration,
@@ -34,6 +35,7 @@ import {
   renameAuthenticator,
 } from "../auth/webauthn";
 import { checkRateLimit, rateLimiters } from "../services/ratelimit.service";
+import { listPrfSaltsForUser } from "../services/prfSalts.service";
 import { ipForStorage, normalizeClientIp } from "../utils/ip";
 
 const NANOID_PATTERN = /^[A-Za-z0-9_-]{21}$/;
@@ -259,6 +261,52 @@ export const passkeyRoutes = new Elysia({ prefix: "/api/auth" })
         .map(authenticatorToDto),
     };
   })
+
+  // Per-credential PRF input salts for the signed-in user's PRF-capable
+  // credentials. Used by the client to prime an `evalByCredential` map on
+  // a PRF-enabled assertion (vault unlock at dashboard load + wrap-on-create).
+  // The PRF output stays client-side; only the salt round-trips.
+  // See docs/audit/27 §7 + D-110.
+  .get("/passkey/prf-salts", async ({ me, set }) => {
+    if (!me) {
+      set.status = 401;
+      return { error: "Not authenticated" };
+    }
+    const entries = await listPrfSaltsForUser(me.id);
+    return {
+      salts: entries.map((e) => ({
+        credentialId: Buffer.from(e.credentialId).toString("base64url"),
+        purpose: e.purpose,
+        salt: Buffer.from(e.salt).toString("base64url"),
+      })),
+    };
+  })
+
+  // Vaulted-transfer count for a single authenticator. Used by the
+  // settings passkey-delete confirmation (D-117 / doc 28 §9): "N transfers
+  // will lose filename visibility after this. Continue?" — fetched on
+  // demand when the user clicks Remove, not preloaded for every passkey.
+  .get(
+    "/passkey/:id/wrapped-transfer-count",
+    async ({ params, me, set }) => {
+      if (!me) {
+        set.status = 401;
+        return { error: "Not authenticated" };
+      }
+      if (!NANOID_PATTERN.test(params.id)) {
+        set.status = 404;
+        return { error: "Not found" };
+      }
+      const count = await countWrappedTransfersForAuthenticator({
+        authenticatorId: params.id,
+        userId: me.id,
+      });
+      return { count };
+    },
+    {
+      params: t.Object({ id: t.String({ minLength: 21, maxLength: 21 }) }),
+    },
+  )
 
   .patch(
     "/passkey/:id",
