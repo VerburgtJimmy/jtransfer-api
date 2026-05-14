@@ -29,6 +29,20 @@
       "when": 1778673670279,
       "tag": "0003_cynical_hedge_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1778704427068,
+      "tag": "0004_certain_solo",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1778768677202,
+      "tag": "0005_session_authenticator_id",
+      "breakpoints": true
     }
   ]
 }

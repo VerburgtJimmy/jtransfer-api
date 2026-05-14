@@ -13,7 +13,10 @@ export type AuthEventType =
   | "session_revoked_admin"
   | "transfer_deleted"
   | "account_deleted"
-  | "account_exported";
+  | "account_exported"
+  | "passkey_registered"
+  | "passkey_login_success"
+  | "passkey_deleted";
 
 interface LogAuthEventInput {
   eventType: AuthEventType;

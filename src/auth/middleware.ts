@@ -32,29 +32,50 @@ export const authPlugin = new Elysia({ name: "auth" })
       const origin = request.headers.get("origin");
       if (origin && !isAllowedOrigin(origin)) {
         // Don't load `me` for cross-origin POSTs — caller will reject.
-        return { me: null as User | null, sessionId: null as string | null, originRejected: true };
+        return {
+          me: null as User | null,
+          sessionId: null as string | null,
+          currentAuthenticatorId: null as string | null,
+          originRejected: true,
+        };
       }
     }
 
     const sessionCookie = cookie?.[SESSION_COOKIE_NAME];
     const token = sessionCookie?.value;
     if (!token || typeof token !== "string") {
-      return { me: null as User | null, sessionId: null as string | null, originRejected: false };
+      return {
+        me: null as User | null,
+        sessionId: null as string | null,
+        currentAuthenticatorId: null as string | null,
+        originRejected: false,
+      };
     }
 
     const session = await validateSession(token);
     if (!session) {
-      return { me: null as User | null, sessionId: null as string | null, originRejected: false };
+      return {
+        me: null as User | null,
+        sessionId: null as string | null,
+        currentAuthenticatorId: null as string | null,
+        originRejected: false,
+      };
     }
 
     const [user] = await db.select().from(users).where(eq(users.id, session.userId)).limit(1);
     if (!user || user.deletedAt) {
-      return { me: null as User | null, sessionId: null as string | null, originRejected: false };
+      return {
+        me: null as User | null,
+        sessionId: null as string | null,
+        currentAuthenticatorId: null as string | null,
+        originRejected: false,
+      };
     }
 
     return {
       me: user as User | null,
       sessionId: session.id as string | null,
+      currentAuthenticatorId: session.authenticatorId as string | null,
       originRejected: false,
     };
   });

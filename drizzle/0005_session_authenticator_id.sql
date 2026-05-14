@@ -1,0 +1,2 @@
+ALTER TABLE "sessions" ADD COLUMN "authenticator_id" varchar(21);--> statement-breakpoint
+ALTER TABLE "sessions" ADD CONSTRAINT "sessions_authenticator_id_authenticators_id_fk" FOREIGN KEY ("authenticator_id") REFERENCES "public"."authenticators"("id") ON DELETE set null ON UPDATE no action;

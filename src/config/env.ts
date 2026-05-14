@@ -82,6 +82,26 @@ export const env = {
   // In dev/test, a per-process random value is fine.
   DOWNLOAD_TOKEN_SECRET: process.env.DOWNLOAD_TOKEN_SECRET ?? (IS_PRODUCTION ? "" : randomSecret()),
 
+  // WebAuthn / passkeys (audit doc 27 §3, D-108).
+  //
+  // `WEBAUTHN_RP_ID` = the host without scheme or port (e.g. `jtransfer.com`).
+  // Browsers reject registrations where the RP ID is not a registrable suffix
+  // of the page origin, so the value must match the deployment domain.
+  // `WEBAUTHN_RP_ORIGIN` = the full origin sent in `expectedOrigin` on verify.
+  // Defaults derive from APP_URL so dev (`http://localhost:5173`) works
+  // without extra config. Both must be explicitly set in prod.
+  WEBAUTHN_RP_ID:
+    process.env.WEBAUTHN_RP_ID ??
+    (() => {
+      try {
+        return new URL(process.env.APP_URL ?? "http://localhost:5173").hostname;
+      } catch {
+        return "localhost";
+      }
+    })(),
+  WEBAUTHN_RP_ORIGIN: process.env.WEBAUTHN_RP_ORIGIN ?? (process.env.APP_URL ?? "http://localhost:5173"),
+  WEBAUTHN_RP_NAME: process.env.WEBAUTHN_RP_NAME ?? "JTransfer",
+
   NODE_ENV,
   IS_PRODUCTION,
 };

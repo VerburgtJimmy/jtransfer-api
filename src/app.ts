@@ -7,6 +7,7 @@ import { env } from "./config/env";
 import { authRoutes } from "./routes/auth.routes";
 import { downloadRoutes } from "./routes/download.routes";
 import { meRoutes } from "./routes/me.routes";
+import { passkeyRoutes } from "./routes/passkey.routes";
 import { uploadRoutes } from "./routes/upload.routes";
 import { validateRoutes } from "./routes/validate.routes";
 
@@ -30,6 +31,7 @@ export function createApp() {
     )
     .get("/health", () => ({ status: "ok", timestamp: new Date().toISOString() }))
     .use(authRoutes)
+    .use(passkeyRoutes)
     .use(uploadRoutes)
     .use(downloadRoutes)
     .use(meRoutes)

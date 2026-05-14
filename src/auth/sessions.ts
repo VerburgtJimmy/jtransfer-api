@@ -5,9 +5,14 @@ import { and, eq, gt, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db } from "../db";
 import { sessions, type Session } from "../db/schema";
+import { env } from "../config/env";
 import { generateToken, hashToken } from "./tokens";
 
-export const SESSION_COOKIE_NAME = "__Host-session";
+// The `__Host-` prefix requires the `Secure` flag, which browsers (correctly)
+// only honour over HTTPS. Local dev runs on `http://localhost`, so we fall
+// back to a plain `session` cookie there. Production keeps the full
+// hardening: `__Host-session; Secure; HttpOnly; SameSite=Lax`.
+export const SESSION_COOKIE_NAME = env.IS_PRODUCTION ? "__Host-session" : "session";
 
 // ASVS 3.3.1 — sliding idle window.
 export const SESSION_IDLE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -21,6 +26,12 @@ interface CreateSessionInput {
   userId: string;
   ip: string | null;
   userAgent: string | null;
+  /**
+   * The authenticator that minted this session, if any. Set only by the
+   * passkey/login/finish path. Powers the "Used to sign in here" hint on
+   * /dashboard/settings — no heuristic fallback.
+   */
+  authenticatorId?: string | null;
 }
 
 interface CreateSessionResult {
@@ -47,6 +58,7 @@ export async function createSession(input: CreateSessionInput): Promise<CreateSe
       lastSeenAt: now,
       ip: input.ip,
       userAgent: input.userAgent,
+      authenticatorId: input.authenticatorId ?? null,
     })
     .returning();
 
@@ -115,12 +127,14 @@ export async function revokeAllSessionsForUser(userId: string): Promise<number> 
 }
 
 /**
- * Cookie attributes for `__Host-session`. The `__Host-` prefix mandates
- * Secure + Path=/ + no Domain attribute (RFC 6265bis §4.1.3.2).
+ * Cookie attributes for the session cookie. In production the cookie name is
+ * `__Host-session`, which mandates Secure + Path=/ + no Domain attribute
+ * (RFC 6265bis §4.1.3.2). In dev we drop Secure so the cookie is accepted
+ * over plain HTTP on localhost.
  */
 export const SESSION_COOKIE_OPTIONS = {
   httpOnly: true,
-  secure: true,
+  secure: env.IS_PRODUCTION,
   sameSite: "lax" as const,
   path: "/",
   // No Domain attribute — host-only.

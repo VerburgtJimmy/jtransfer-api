@@ -201,23 +201,46 @@ export async function consumeMagicLinkByCode(
   const matches = constantTimeEqual(candidateHash, row.codeHash);
 
   if (!matches) {
-    // Atomically increment attempts. If this push tips it past the cap,
-    // burn the row in the same statement so a racing request can't slip past.
+    // Atomically increment attempts, guarded against an already-consumed row.
+    // .returning() gives us the post-increment count so the burn decision
+    // is race-safe — concurrent increments are serialised by the row lock,
+    // and each caller sees a distinct attempt number. (The single-statement
+    // CASE form fails parameter binding under postgres-js when a Date
+    // sits inside the CASE arm; splitting the burn into its own statement
+    // sidesteps the type-inference loss.)
     const [updated] = await db
       .update(magicLinkTokens)
-      .set({
-        codeAttempts: sql`${magicLinkTokens.codeAttempts} + 1`,
-        consumedAt: sql`CASE WHEN ${magicLinkTokens.codeAttempts} + 1 >= ${CODE_MAX_ATTEMPTS} THEN ${now} ELSE ${magicLinkTokens.consumedAt} END`,
-      })
+      .set({ codeAttempts: sql`${magicLinkTokens.codeAttempts} + 1` })
       .where(
         and(
           eq(magicLinkTokens.id, row.id),
           isNull(magicLinkTokens.consumedAt),
         ),
       )
-      .returning({ codeAttempts: magicLinkTokens.codeAttempts, consumedAt: magicLinkTokens.consumedAt });
+      .returning({ codeAttempts: magicLinkTokens.codeAttempts });
 
-    if (updated?.consumedAt) return { ok: false, reason: "burned" };
+    if (!updated) {
+      // Row was consumed (likely burned by a parallel request) before we
+      // could increment — surface as consumed, same uniform failure to the
+      // caller.
+      return { ok: false, reason: "consumed" };
+    }
+
+    if (updated.codeAttempts >= CODE_MAX_ATTEMPTS) {
+      // Burn. Re-guard on `consumed_at IS NULL` so a racing burn doesn't
+      // overwrite an earlier sibling's timestamp.
+      await db
+        .update(magicLinkTokens)
+        .set({ consumedAt: now })
+        .where(
+          and(
+            eq(magicLinkTokens.id, row.id),
+            isNull(magicLinkTokens.consumedAt),
+          ),
+        );
+      return { ok: false, reason: "burned" };
+    }
+
     return { ok: false, reason: "wrong_code" };
   }
 
