@@ -1,4 +1,4 @@
-// WebAuthn / passkey ceremony helpers. See docs/audit/27-passkey-webauthn-prf.md.
+// WebAuthn / passkey ceremony helpers.
 //
 // Responsibilities:
 //  - Issue and consume one-shot challenges for both registration and
@@ -6,9 +6,10 @@
 //  - Verify ceremony responses via @simplewebauthn/server and persist the
 //    resulting authenticator row (registration) or bump sign_count
 //    (authentication).
-//  - Expose PRF capability bookkeeping: registration response is probed and
-//    the `supports_prf` flag is set on the row. PRF *use* (vault wrapping)
-//    lives in Phase F (doc 28).
+//
+// Passkeys are a login factor only — they no longer participate in vault
+// key derivation. The vault (K_vault) is wrapped under password and
+// recovery-phrase KEKs derived via Argon2id. See ADR-0004.
 //
 // What this module does NOT do:
 //  - Mint sessions. Caller resolves the user and hands off to
@@ -31,7 +32,6 @@ import {
 import { db } from "../db";
 import {
   authenticators,
-  transfers,
   webauthnChallenges,
   type Authenticator,
 } from "../db/schema";
@@ -39,19 +39,10 @@ import { env } from "../config/env";
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-// PRF capability is detected via `clientExtensionResults.prf.enabled` after
-// `create()` — no PRF *evaluation* is needed during Phase D. We deliberately
-// do NOT send `prf.eval` here: SimpleWebAuthn does not serialise BufferSource
-// inside `extensions`, so a raw Uint8Array survives as a {"0":1,...} object
-// over JSON and the browser then rejects it ("'first' member of
-// AuthenticationExtensionsPRFValues could not be converted to ArrayBuffer").
-// Per-purpose salts and real PRF evaluation are the job of Phase F (doc 28).
-
 /**
  * Generate registration options + persist a one-shot challenge bound to the
  * user. Conservative defaults: ES256 then RS256, resident key required,
- * user verification required, no attestation. PRF eval is requested so the
- * authenticator surfaces capability in the registration response.
+ * user verification required, no attestation.
  */
 export async function beginRegistration(input: {
   userId: string;
@@ -80,12 +71,6 @@ export async function beginRegistration(input: {
     excludeCredentials: input.existingCredentialIds.map((credentialId) => ({
       id: bytesToBase64url(credentialId),
     })),
-    extensions: {
-      // `prf: {}` (no eval) asks the client to report PRF capability via
-      // `clientExtensionResults.prf.enabled` without performing an evaluation.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ...({ prf: {} } as any),
-    },
   });
 
   const challengeRowId = nanoid();
@@ -146,13 +131,6 @@ export async function finishRegistration(input: {
   const info = verification.registrationInfo;
   const credentialIdBytes = base64urlToBytes(info.credential.id);
 
-  // PRF capability surfaces on the registration response under
-  // clientExtensionResults.prf. Some authenticators return `enabled: true`
-  // without evaluating; some return both `enabled` and `results.first`.
-  // Either signal counts as supports_prf.
-  const prfResult = readPrfExtension(input.response);
-  const supportsPrf = prfResult.enabled || prfResult.firstPresent;
-
   const newAuth: typeof authenticators.$inferInsert = {
     id: nanoid(),
     userId: input.userId,
@@ -162,7 +140,6 @@ export async function finishRegistration(input: {
     transports: (info.credential.transports ?? []) as string[],
     deviceType: info.credentialDeviceType,
     backedUp: info.credentialBackedUp,
-    supportsPrf,
     nickname: input.nickname,
   };
 
@@ -197,9 +174,6 @@ export async function beginAuthentication(): Promise<{
     rpID: env.WEBAUTHN_RP_ID,
     allowCredentials: [],
     userVerification: "required",
-    // No PRF eval at login — Phase D is capability detection only. Adding
-    // an unencodable BufferSource here makes the browser reject the
-    // options entirely (see PRF_PROBE_SALT comment above).
   });
 
   const challengeRowId = nanoid();
@@ -299,63 +273,6 @@ export async function listAuthenticatorsForUser(userId: string): Promise<Authent
 }
 
 /**
- * Number of vaulted transfers wrapped under a given authenticator (matched
- * by raw credential_id, not authenticator pk). Used by the dashboard's
- * passkey-delete confirmation to surface "N transfers will lose filename
- * visibility" per D-117. Soft-deleted transfers are excluded. Returns 0
- * if the authenticator does not belong to `userId` (defensive).
- */
-export async function countWrappedTransfersForAuthenticator(input: {
-  authenticatorId: string;
-  userId: string;
-}): Promise<number> {
-  const [auth] = await db
-    .select({ credentialId: authenticators.credentialId })
-    .from(authenticators)
-    .where(and(
-      eq(authenticators.id, input.authenticatorId),
-      eq(authenticators.userId, input.userId),
-    ))
-    .limit(1);
-  if (!auth) return 0;
-
-  // Count via a small targeted select rather than COUNT(*) so the SQL stays
-  // legible alongside the rest of webauthn.ts. Transfers tables are tiny per
-  // user (free tier) — no perf concern.
-  const rows = await db
-    .select({ id: transfers.id })
-    .from(transfers)
-    .where(and(
-      eq(transfers.userId, input.userId),
-      eq(transfers.wrapCredentialId, auth.credentialId),
-      eq(transfers.isDeleted, false),
-    ));
-  return rows.length;
-}
-
-/**
- * True iff the given raw credential id belongs to `userId` and supports PRF.
- * Used at /upload/complete to validate that the wrap-credential the client
- * sent is one of the user's own PRF-capable credentials before we accept
- * the wrap. See docs/audit/28 §3.
- */
-export async function userOwnsPrfCredential(
-  userId: string,
-  credentialId: Uint8Array,
-): Promise<boolean> {
-  const [row] = await db
-    .select({ id: authenticators.id })
-    .from(authenticators)
-    .where(and(
-      eq(authenticators.userId, userId),
-      eq(authenticators.credentialId, credentialId),
-      eq(authenticators.supportsPrf, true),
-    ))
-    .limit(1);
-  return row != null;
-}
-
-/**
  * Delete an authenticator. Caller verifies ownership before invoking.
  * Returns true if a row was removed.
  */
@@ -423,19 +340,6 @@ async function consumeChallenge(input: {
     return null;
   }
   return updated;
-}
-
-function readPrfExtension(
-  response: RegistrationResponseJSON,
-): { enabled: boolean; firstPresent: boolean } {
-  const ext = response.clientExtensionResults as
-    | { prf?: { enabled?: boolean; results?: { first?: unknown } } }
-    | undefined;
-  if (!ext?.prf) return { enabled: false, firstPresent: false };
-  return {
-    enabled: ext.prf.enabled === true,
-    firstPresent: ext.prf.results?.first != null,
-  };
 }
 
 function isUniqueViolation(err: unknown): boolean {

@@ -1,6 +1,7 @@
 import { Elysia, redirect, t } from "elysia";
 import { env } from "../config/env";
 import { authPlugin } from "../auth/middleware";
+import { ipContextPlugin } from "../auth/ipContextPlugin";
 import { logAuthEvent } from "../auth/events";
 import {
   issueMagicLink,
@@ -19,8 +20,7 @@ import {
 import { findOrCreateUserByEmail } from "../auth/users";
 import { canonicaliseCode, isLikelyEmail, normaliseEmail } from "../auth/tokens";
 import { sendMagicLink } from "../services/email.service";
-import { checkRateLimit, rateLimiters } from "../services/ratelimit.service";
-import { ipForStorage, normalizeClientIp } from "../utils/ip";
+import { checkIpRateLimit, checkRateLimit, rateLimiters } from "../services/ratelimit.service";
 
 // Cross-device pending-login cookie. Holds the opaque pending_session_id that
 // /verify-code uses to look up the magic-link row. `__Host-` prefix mandates
@@ -70,6 +70,7 @@ async function constantTimeVerifyCodeFailure(
 
 export const authRoutes = new Elysia({ prefix: "/api/auth" })
   .use(authPlugin)
+  .use(ipContextPlugin)
 
   // Request a magic-link email. Always returns the same shape regardless of
   // whether the email exists. Silent auto-create: a new account is created
@@ -78,17 +79,12 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
   // cookie set on the response.
   .post(
     "/request-magic-link",
-    async ({ body, request, cookie, set }) => {
+    async ({ body, request, cookie, ipContext, set }) => {
       const start = Date.now();
-      const ip = normalizeClientIp(
-        request.headers.get("cf-connecting-ip"),
-        request.headers.get("x-forwarded-for"),
-      );
-      const ipDb = ipForStorage(ip);
       const userAgent = request.headers.get("user-agent");
 
       // Per-IP throttle (cheap to evaluate before email shape check).
-      const ipLimit = await checkRateLimit(ip, rateLimiters.authRequestPerIp);
+      const ipLimit = await checkIpRateLimit(ipContext, rateLimiters.authRequestPerIp);
       if (!ipLimit.allowed) {
         set.status = 429;
         set.headers["Retry-After"] = String(ipLimit.resetIn);
@@ -118,12 +114,11 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
 
         const { token, pendingSessionId, expiresAt } = await issueMagicLink({
           email,
-          ip: ipDb,
           userAgent,
         });
         const link = `${env.APP_URL}/api/auth/verify?token=${encodeURIComponent(token)}`;
 
-        await sendMagicLink({ to: email, link, expiresAt, ip: ipDb, userAgent });
+        await sendMagicLink({ to: email, link, expiresAt, ipContext, userAgent });
 
         // Bind the code path to this device via a host-only pending cookie.
         // Without this cookie, the 6-digit code is useless — restores the
@@ -138,7 +133,7 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
         await logAuthEvent({
           eventType: "magic_link_requested",
           email,
-          ip: ipDb,
+          ipContext,
           userAgent,
         });
       } catch (err) {
@@ -162,23 +157,18 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
   // burns the row after CODE_MAX_ATTEMPTS wrong tries. See audit doc 21.
   .post(
     "/verify-code",
-    async ({ body, cookie, originRejected, request, set }) => {
+    async ({ body, cookie, ipContext, originRejected, request, set }) => {
       if (originRejected) {
         set.status = 403;
         return { error: "Forbidden" };
       }
       const start = Date.now();
 
-      const ip = normalizeClientIp(
-        request.headers.get("cf-connecting-ip"),
-        request.headers.get("x-forwarded-for"),
-      );
-      const ipDb = ipForStorage(ip);
       const userAgent = request.headers.get("user-agent");
 
       // Existing IP-keyed verify limiter applies to the code path too —
       // defence in depth alongside the per-row attempt counter.
-      const verifyLimit = await checkRateLimit(ip, rateLimiters.authVerifyPerIp);
+      const verifyLimit = await checkIpRateLimit(ipContext, rateLimiters.authVerifyPerIp);
       if (!verifyLimit.allowed) {
         set.status = 429;
         set.headers["Retry-After"] = String(verifyLimit.resetIn);
@@ -211,7 +201,7 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
       const user = await findOrCreateUserByEmail(result.row.email);
       const { session, token: sessionToken } = await createSession({
         userId: user.id,
-        ip: ipDb,
+        ipContext,
         userAgent,
       });
 
@@ -227,14 +217,14 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
         eventType: "magic_link_consumed",
         userId: user.id,
         email: user.email,
-        ip: ipDb,
+        ipContext,
         userAgent,
       });
       await logAuthEvent({
         eventType: "login_success",
         userId: user.id,
         email: user.email,
-        ip: ipDb,
+        ipContext,
         userAgent,
       });
 
@@ -256,15 +246,10 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
   //    the code back on the originating device via /verify-code.
   .get(
     "/verify",
-    async ({ query, request, cookie, set }) => {
-      const ip = normalizeClientIp(
-        request.headers.get("cf-connecting-ip"),
-        request.headers.get("x-forwarded-for"),
-      );
-      const ipDb = ipForStorage(ip);
+    async ({ query, request, cookie, ipContext, set }) => {
       const userAgent = request.headers.get("user-agent");
 
-      const verifyLimit = await checkRateLimit(ip, rateLimiters.authVerifyPerIp);
+      const verifyLimit = await checkIpRateLimit(ipContext, rateLimiters.authVerifyPerIp);
       if (!verifyLimit.allowed) {
         set.status = 429;
         set.headers["Retry-After"] = String(verifyLimit.resetIn);
@@ -301,7 +286,7 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
 
       const { session, token: sessionToken } = await createSession({
         userId: user.id,
-        ip: ipDb,
+        ipContext,
         userAgent,
       });
 
@@ -317,14 +302,14 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
         eventType: "magic_link_consumed",
         userId: user.id,
         email: user.email,
-        ip: ipDb,
+        ipContext,
         userAgent,
       });
       await logAuthEvent({
         eventType: "login_success",
         userId: user.id,
         email: user.email,
-        ip: ipDb,
+        ipContext,
         userAgent,
       });
 
@@ -350,22 +335,22 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
         // / verify-code sessions and any pre-migration rows. Drives the
         // "Used to sign in here" hint on /dashboard/settings.
         currentAuthenticatorId: currentAuthenticatorId ?? null,
+        // Non-null once the user has completed vault setup (ADR-0004).
+        // Drives the dashboard's "set up vault" prompt and the route guard
+        // that bounces signed-in users without a vault to /setup/vault.
+        vaultSetupCompletedAt: me.vaultSetupCompletedAt
+          ? me.vaultSetupCompletedAt.toISOString()
+          : null,
       },
     };
   })
 
   // Logout — revokes the current session.
-  .post("/logout", async ({ me, sessionId, originRejected, cookie, request, set }) => {
+  .post("/logout", async ({ me, sessionId, ipContext, originRejected, cookie, request, set }) => {
     if (originRejected) {
       set.status = 403;
       return { error: "Forbidden" };
     }
-    const ipDb = ipForStorage(
-      normalizeClientIp(
-        request.headers.get("cf-connecting-ip"),
-        request.headers.get("x-forwarded-for"),
-      ),
-    );
     if (sessionId) {
       await revokeSession(sessionId);
     }
@@ -374,7 +359,7 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
         eventType: "logout",
         userId: me.id,
         email: me.email,
-        ip: ipDb,
+        ipContext,
         userAgent: request.headers.get("user-agent"),
       });
     }
@@ -385,7 +370,7 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
   // Logout from all devices.
   .post(
     "/logout-all",
-    async ({ me, originRejected, cookie, request, set }) => {
+    async ({ me, ipContext, originRejected, cookie, request, set }) => {
       if (originRejected) {
         set.status = 403;
         return { error: "Forbidden" };
@@ -395,17 +380,11 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
         return { error: "Not authenticated" };
       }
       const count = await revokeAllSessionsForUser(me.id);
-      const ipDb = ipForStorage(
-        normalizeClientIp(
-          request.headers.get("cf-connecting-ip"),
-          request.headers.get("x-forwarded-for"),
-        ),
-      );
       await logAuthEvent({
         eventType: "logout_all",
         userId: me.id,
         email: me.email,
-        ip: ipDb,
+        ipContext,
         userAgent: request.headers.get("user-agent"),
       });
       cookie[SESSION_COOKIE_NAME].remove();

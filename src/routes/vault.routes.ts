@@ -1,0 +1,268 @@
+// Vault endpoints. The server stores opaque crypto blobs only — all KDF
+// work and (un)wrapping happens client-side. See
+// docs/adr/0004-vault-redesign-password-and-recovery-phrase.md.
+//
+// Surface:
+//   GET  /api/me/vault                (auth — read salts + wraps + setup flag)
+//   POST /api/me/vault/setup          (auth — one-shot first-time setup)
+//   POST /api/me/vault/password       (auth — rewrap K_vault under new password)
+//   POST /api/me/vault/phrase         (auth — rewrap K_vault under new phrase)
+
+import { Elysia, t } from "elysia";
+import { authPlugin } from "../auth/middleware";
+import { ipContextPlugin } from "../auth/ipContextPlugin";
+import { logAuthEvent } from "../auth/events";
+import { checkRateLimit, rateLimiters } from "../services/ratelimit.service";
+import {
+  CURRENT_KDF_VERSION,
+  SALT_BYTES,
+  WRAP_BYTES,
+  createUserVault,
+  getUserVault,
+  updateVaultPasswordWrap,
+  updateVaultPhraseWrap,
+} from "../services/vault.service";
+
+function decodeBase64Url(input: string): Uint8Array | null {
+  // Strict base64url — '-_' alphabet, no padding. Buffer's decoder is lenient
+  // about garbage; we reject it up front so a malformed payload cannot reach
+  // the bytea column.
+  if (!/^[A-Za-z0-9_-]+$/.test(input)) return null;
+  try {
+    return new Uint8Array(Buffer.from(input, "base64url"));
+  } catch {
+    return null;
+  }
+}
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64url");
+}
+
+function decodeFixedLength(input: string, byteLength: number): Uint8Array | null {
+  const bytes = decodeBase64Url(input);
+  if (!bytes || bytes.length !== byteLength) return null;
+  return bytes;
+}
+
+function validateKdfVersion(version: number): boolean {
+  // Only the current version is accepted. When parameters bump we widen
+  // the accept-list and migrate readers/writers separately.
+  return Number.isInteger(version) && version === CURRENT_KDF_VERSION;
+}
+
+export const vaultRoutes = new Elysia({ prefix: "/api/me/vault" })
+  .use(authPlugin)
+  .use(ipContextPlugin)
+
+  .get("/", async ({ me, set }) => {
+    if (!me) {
+      set.status = 401;
+      return { error: "Not authenticated" };
+    }
+    const row = await getUserVault(me.id);
+    if (!row) {
+      return { isSetup: false as const };
+    }
+    return {
+      isSetup: true as const,
+      kdfVersion: row.kdfVersion,
+      saltPassword: bytesToBase64Url(row.saltPassword),
+      saltPhrase: bytesToBase64Url(row.saltPhrase),
+      wrapPassword: bytesToBase64Url(row.wrapPassword),
+      wrapPhrase: bytesToBase64Url(row.wrapPhrase),
+      passwordChangedAt: row.passwordChangedAt?.toISOString() ?? null,
+      phraseRegeneratedAt: row.phraseRegeneratedAt?.toISOString() ?? null,
+    };
+  })
+
+  .post(
+    "/setup",
+    async ({ body, me, ipContext, originRejected, request, set }) => {
+      if (originRejected) {
+        set.status = 403;
+        return { error: "Forbidden" };
+      }
+      if (!me) {
+        set.status = 401;
+        return { error: "Not authenticated" };
+      }
+
+      const limit = await checkRateLimit(me.id, rateLimiters.vaultSetup);
+      if (!limit.allowed) {
+        set.status = 429;
+        set.headers["Retry-After"] = String(limit.resetIn);
+        return { error: "Rate limit exceeded. Try again later." };
+      }
+
+      if (!validateKdfVersion(body.kdfVersion)) {
+        set.status = 400;
+        return { error: "Unsupported kdfVersion." };
+      }
+
+      const saltPassword = decodeFixedLength(body.saltPassword, SALT_BYTES);
+      const saltPhrase = decodeFixedLength(body.saltPhrase, SALT_BYTES);
+      const wrapPassword = decodeFixedLength(body.wrapPassword, WRAP_BYTES);
+      const wrapPhrase = decodeFixedLength(body.wrapPhrase, WRAP_BYTES);
+      if (!saltPassword || !saltPhrase || !wrapPassword || !wrapPhrase) {
+        set.status = 400;
+        return { error: "Malformed vault payload." };
+      }
+
+      const result = await createUserVault(me.id, {
+        saltPassword,
+        saltPhrase,
+        wrapPassword,
+        wrapPhrase,
+        kdfVersion: body.kdfVersion,
+      });
+      if (!result.ok) {
+        // Setup is one-shot. Subsequent attempts must go through change-password
+        // or regenerate-phrase. 409 is the honest status here.
+        set.status = 409;
+        return { error: "Vault is already set up." };
+      }
+
+      await logAuthEvent({
+        eventType: "vault_setup_completed",
+        userId: me.id,
+        email: me.email,
+        ipContext,
+        userAgent: request.headers.get("user-agent"),
+      });
+
+      return { ok: true as const };
+    },
+    {
+      body: t.Object({
+        kdfVersion: t.Integer({ minimum: 1, maximum: 1000 }),
+        saltPassword: t.String({ maxLength: 64 }),
+        saltPhrase: t.String({ maxLength: 64 }),
+        wrapPassword: t.String({ maxLength: 128 }),
+        wrapPhrase: t.String({ maxLength: 128 }),
+      }),
+    },
+  )
+
+  .post(
+    "/password",
+    async ({ body, me, ipContext, originRejected, request, set }) => {
+      if (originRejected) {
+        set.status = 403;
+        return { error: "Forbidden" };
+      }
+      if (!me) {
+        set.status = 401;
+        return { error: "Not authenticated" };
+      }
+
+      const limit = await checkRateLimit(me.id, rateLimiters.vaultPasswordChange);
+      if (!limit.allowed) {
+        set.status = 429;
+        set.headers["Retry-After"] = String(limit.resetIn);
+        return { error: "Rate limit exceeded. Try again later." };
+      }
+
+      if (!validateKdfVersion(body.kdfVersion)) {
+        set.status = 400;
+        return { error: "Unsupported kdfVersion." };
+      }
+
+      const saltPassword = decodeFixedLength(body.saltPassword, SALT_BYTES);
+      const wrapPassword = decodeFixedLength(body.wrapPassword, WRAP_BYTES);
+      if (!saltPassword || !wrapPassword) {
+        set.status = 400;
+        return { error: "Malformed vault payload." };
+      }
+
+      const updated = await updateVaultPasswordWrap(
+        me.id,
+        saltPassword,
+        wrapPassword,
+        body.kdfVersion,
+      );
+      if (!updated) {
+        // No vault row to update — caller must run /setup first.
+        set.status = 409;
+        return { error: "Vault is not set up." };
+      }
+
+      await logAuthEvent({
+        eventType: "vault_password_changed",
+        userId: me.id,
+        email: me.email,
+        ipContext,
+        userAgent: request.headers.get("user-agent"),
+      });
+
+      return { ok: true as const };
+    },
+    {
+      body: t.Object({
+        kdfVersion: t.Integer({ minimum: 1, maximum: 1000 }),
+        saltPassword: t.String({ maxLength: 64 }),
+        wrapPassword: t.String({ maxLength: 128 }),
+      }),
+    },
+  )
+
+  .post(
+    "/phrase",
+    async ({ body, me, ipContext, originRejected, request, set }) => {
+      if (originRejected) {
+        set.status = 403;
+        return { error: "Forbidden" };
+      }
+      if (!me) {
+        set.status = 401;
+        return { error: "Not authenticated" };
+      }
+
+      const limit = await checkRateLimit(me.id, rateLimiters.vaultPhraseRegenerate);
+      if (!limit.allowed) {
+        set.status = 429;
+        set.headers["Retry-After"] = String(limit.resetIn);
+        return { error: "Rate limit exceeded. Try again later." };
+      }
+
+      if (!validateKdfVersion(body.kdfVersion)) {
+        set.status = 400;
+        return { error: "Unsupported kdfVersion." };
+      }
+
+      const saltPhrase = decodeFixedLength(body.saltPhrase, SALT_BYTES);
+      const wrapPhrase = decodeFixedLength(body.wrapPhrase, WRAP_BYTES);
+      if (!saltPhrase || !wrapPhrase) {
+        set.status = 400;
+        return { error: "Malformed vault payload." };
+      }
+
+      const updated = await updateVaultPhraseWrap(
+        me.id,
+        saltPhrase,
+        wrapPhrase,
+        body.kdfVersion,
+      );
+      if (!updated) {
+        set.status = 409;
+        return { error: "Vault is not set up." };
+      }
+
+      await logAuthEvent({
+        eventType: "vault_phrase_regenerated",
+        userId: me.id,
+        email: me.email,
+        ipContext,
+        userAgent: request.headers.get("user-agent"),
+      });
+
+      return { ok: true as const };
+    },
+    {
+      body: t.Object({
+        kdfVersion: t.Integer({ minimum: 1, maximum: 1000 }),
+        saltPhrase: t.String({ maxLength: 64 }),
+        wrapPhrase: t.String({ maxLength: 128 }),
+      }),
+    },
+  );

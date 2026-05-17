@@ -1,17 +1,13 @@
 import { Elysia, t } from 'elysia';
 import { validateMagicBytes } from '../utils/magicBytes';
 import { decodeBase64ToBytes } from '../utils/base64';
-import { checkRateLimit, rateLimiters } from '../services/ratelimit.service';
-import { normalizeClientIp } from '../utils/ip';
+import { checkIpRateLimit, rateLimiters } from '../services/ratelimit.service';
+import { ipContextPlugin } from '../auth/ipContextPlugin';
 
 export const validateRoutes = new Elysia({ prefix: '/api' })
-  .post('/validate', async ({ body, request, set }) => {
-    const ip = normalizeClientIp(
-      request.headers.get('cf-connecting-ip'),
-      request.headers.get('x-forwarded-for')
-    );
-
-    const rateLimit = await checkRateLimit(ip, rateLimiters.validate);
+  .use(ipContextPlugin)
+  .post('/validate', async ({ body, ipContext, set }) => {
+    const rateLimit = await checkIpRateLimit(ipContext, rateLimiters.validate);
     if (!rateLimit.allowed) {
       set.status = 429;
       set.headers['Retry-After'] = String(rateLimit.resetIn);

@@ -1,4 +1,5 @@
-// WebAuthn / passkey endpoints. See docs/audit/27-passkey-webauthn-prf.md.
+// WebAuthn / passkey endpoints. Passkeys are a login factor only — see
+// ADR-0004 for why they no longer participate in vault key derivation.
 //
 // Surface:
 //   POST   /api/auth/passkey/register/begin      (auth required)
@@ -14,6 +15,7 @@
 
 import { Elysia, t } from "elysia";
 import { authPlugin } from "../auth/middleware";
+import { ipContextPlugin } from "../auth/ipContextPlugin";
 import { logAuthEvent } from "../auth/events";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
@@ -27,16 +29,13 @@ import {
 import {
   beginAuthentication,
   beginRegistration,
-  countWrappedTransfersForAuthenticator,
   deleteAuthenticator,
   finishAuthentication,
   finishRegistration,
   listAuthenticatorsForUser,
   renameAuthenticator,
 } from "../auth/webauthn";
-import { checkRateLimit, rateLimiters } from "../services/ratelimit.service";
-import { listPrfSaltsForUser } from "../services/prfSalts.service";
-import { ipForStorage, normalizeClientIp } from "../utils/ip";
+import { checkIpRateLimit, rateLimiters } from "../services/ratelimit.service";
 
 const NANOID_PATTERN = /^[A-Za-z0-9_-]{21}$/;
 
@@ -45,7 +44,6 @@ function authenticatorToDto(a: {
   nickname: string | null;
   deviceType: string;
   backedUp: boolean;
-  supportsPrf: boolean;
   transports: string[];
   createdAt: Date;
   lastUsedAt: Date | null;
@@ -55,7 +53,6 @@ function authenticatorToDto(a: {
     nickname: a.nickname,
     deviceType: a.deviceType,
     backedUp: a.backedUp,
-    supportsPrf: a.supportsPrf,
     transports: a.transports,
     createdAt: a.createdAt.toISOString(),
     lastUsedAt: a.lastUsedAt?.toISOString() ?? null,
@@ -64,6 +61,7 @@ function authenticatorToDto(a: {
 
 export const passkeyRoutes = new Elysia({ prefix: "/api/auth" })
   .use(authPlugin)
+  .use(ipContextPlugin)
 
   // ─── Registration ──────────────────────────────────────────────────────
 
@@ -92,7 +90,7 @@ export const passkeyRoutes = new Elysia({ prefix: "/api/auth" })
 
   .post(
     "/passkey/register/finish",
-    async ({ body, me, originRejected, request, set }) => {
+    async ({ body, me, ipContext, originRejected, request, set }) => {
       if (originRejected) {
         set.status = 403;
         return { error: "Forbidden" };
@@ -116,17 +114,11 @@ export const passkeyRoutes = new Elysia({ prefix: "/api/auth" })
         return { error: failureMessage(result.reason) };
       }
 
-      const ipDb = ipForStorage(
-        normalizeClientIp(
-          request.headers.get("cf-connecting-ip"),
-          request.headers.get("x-forwarded-for"),
-        ),
-      );
       await logAuthEvent({
         eventType: "passkey_registered",
         userId: me.id,
         email: me.email,
-        ip: ipDb,
+        ipContext,
         userAgent: request.headers.get("user-agent"),
       });
 
@@ -145,7 +137,7 @@ export const passkeyRoutes = new Elysia({ prefix: "/api/auth" })
 
   .post(
     "/passkey/login/begin",
-    async ({ originRejected, request, set }) => {
+    async ({ ipContext, originRejected, set }) => {
       if (originRejected) {
         set.status = 403;
         return { error: "Forbidden" };
@@ -153,11 +145,7 @@ export const passkeyRoutes = new Elysia({ prefix: "/api/auth" })
 
       // Reuse the existing verify-side rate limiter — a passkey assertion is
       // the same shape of "claim auth" attempt the magic-link verify is.
-      const ip = normalizeClientIp(
-        request.headers.get("cf-connecting-ip"),
-        request.headers.get("x-forwarded-for"),
-      );
-      const limit = await checkRateLimit(ip, rateLimiters.authVerifyPerIp);
+      const limit = await checkIpRateLimit(ipContext, rateLimiters.authVerifyPerIp);
       if (!limit.allowed) {
         set.status = 429;
         set.headers["Retry-After"] = String(limit.resetIn);
@@ -171,24 +159,19 @@ export const passkeyRoutes = new Elysia({ prefix: "/api/auth" })
 
   .post(
     "/passkey/login/finish",
-    async ({ body, originRejected, cookie, request, set }) => {
+    async ({ body, ipContext, originRejected, cookie, request, set }) => {
       if (originRejected) {
         set.status = 403;
         return { error: "Forbidden" };
       }
 
-      const ip = normalizeClientIp(
-        request.headers.get("cf-connecting-ip"),
-        request.headers.get("x-forwarded-for"),
-      );
-      const limit = await checkRateLimit(ip, rateLimiters.authVerifyPerIp);
+      const limit = await checkIpRateLimit(ipContext, rateLimiters.authVerifyPerIp);
       if (!limit.allowed) {
         set.status = 429;
         set.headers["Retry-After"] = String(limit.resetIn);
         return { error: "Too many requests. Try again later." };
       }
 
-      const ipDb = ipForStorage(ip);
       const userAgent = request.headers.get("user-agent");
 
       const result = await finishAuthentication({
@@ -216,7 +199,7 @@ export const passkeyRoutes = new Elysia({ prefix: "/api/auth" })
 
       const { session, token: sessionToken } = await createSession({
         userId: user.id,
-        ip: ipDb,
+        ipContext,
         userAgent,
         authenticatorId: result.authenticator.id,
       });
@@ -232,7 +215,7 @@ export const passkeyRoutes = new Elysia({ prefix: "/api/auth" })
         eventType: "passkey_login_success",
         userId: user.id,
         email: user.email,
-        ip: ipDb,
+        ipContext,
         userAgent,
       });
 
@@ -261,52 +244,6 @@ export const passkeyRoutes = new Elysia({ prefix: "/api/auth" })
         .map(authenticatorToDto),
     };
   })
-
-  // Per-credential PRF input salts for the signed-in user's PRF-capable
-  // credentials. Used by the client to prime an `evalByCredential` map on
-  // a PRF-enabled assertion (vault unlock at dashboard load + wrap-on-create).
-  // The PRF output stays client-side; only the salt round-trips.
-  // See docs/audit/27 §7 + D-110.
-  .get("/passkey/prf-salts", async ({ me, set }) => {
-    if (!me) {
-      set.status = 401;
-      return { error: "Not authenticated" };
-    }
-    const entries = await listPrfSaltsForUser(me.id);
-    return {
-      salts: entries.map((e) => ({
-        credentialId: Buffer.from(e.credentialId).toString("base64url"),
-        purpose: e.purpose,
-        salt: Buffer.from(e.salt).toString("base64url"),
-      })),
-    };
-  })
-
-  // Vaulted-transfer count for a single authenticator. Used by the
-  // settings passkey-delete confirmation (D-117 / doc 28 §9): "N transfers
-  // will lose filename visibility after this. Continue?" — fetched on
-  // demand when the user clicks Remove, not preloaded for every passkey.
-  .get(
-    "/passkey/:id/wrapped-transfer-count",
-    async ({ params, me, set }) => {
-      if (!me) {
-        set.status = 401;
-        return { error: "Not authenticated" };
-      }
-      if (!NANOID_PATTERN.test(params.id)) {
-        set.status = 404;
-        return { error: "Not found" };
-      }
-      const count = await countWrappedTransfersForAuthenticator({
-        authenticatorId: params.id,
-        userId: me.id,
-      });
-      return { count };
-    },
-    {
-      params: t.Object({ id: t.String({ minLength: 21, maxLength: 21 }) }),
-    },
-  )
 
   .patch(
     "/passkey/:id",
@@ -349,7 +286,7 @@ export const passkeyRoutes = new Elysia({ prefix: "/api/auth" })
 
   .delete(
     "/passkey/:id",
-    async ({ params, me, originRejected, request, set }) => {
+    async ({ params, me, ipContext, originRejected, request, set }) => {
       if (originRejected) {
         set.status = 403;
         return { error: "Forbidden" };
@@ -372,17 +309,11 @@ export const passkeyRoutes = new Elysia({ prefix: "/api/auth" })
         return { error: "Not found" };
       }
 
-      const ipDb = ipForStorage(
-        normalizeClientIp(
-          request.headers.get("cf-connecting-ip"),
-          request.headers.get("x-forwarded-for"),
-        ),
-      );
       await logAuthEvent({
         eventType: "passkey_deleted",
         userId: me.id,
         email: me.email,
-        ip: ipDb,
+        ipContext,
         userAgent: request.headers.get("user-agent"),
       });
 

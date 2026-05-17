@@ -20,3 +20,7 @@ pre-commit:
           echo "  unstage with: git restore --staged <file>"
           exit 1
         fi
+    check-no-raw-ip:
+      # IP minimization guardrail — audit doc 19 §4.6 / ADR-0002.
+      glob: "{src/**/*.ts,drizzle/**/*.sql}"
+      run: bun run check:no-raw-ip

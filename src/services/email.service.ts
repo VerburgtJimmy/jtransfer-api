@@ -5,14 +5,34 @@
 // to stdout so flows can be tested without a real send.
 
 import { env } from "../config/env";
+import type { IpContext } from "../utils/ipContext";
 
 interface SendMagicLinkInput {
   to: string;
   link: string;
   expiresAt: Date;
-  /** IP of the magic-link requester (shown in email body for security context). */
-  ip: string | null;
+  /**
+   * Derived request context (country / ASN / city). Per audit doc 19 §3 and
+   * D-083 the magic-link email body shows the derived signal — not the raw
+   * IP — so the user can still recognise legitimate sign-in attempts
+   * without us persisting (or transmitting) the IP itself.
+   */
+  ipContext: IpContext;
   userAgent: string | null;
+}
+
+function formatLocation(ipContext: IpContext): string {
+  const parts: string[] = [];
+  if (ipContext.city) parts.push(ipContext.city);
+  if (ipContext.country && ipContext.country !== "unknown") parts.push(ipContext.country);
+  const location = parts.join(", ");
+  const asn = ipContext.asn
+    ? `AS${ipContext.asn}${ipContext.asnOrg ? ` (${ipContext.asnOrg})` : ""}`
+    : null;
+  if (location && asn) return `${location} · ${asn}`;
+  if (location) return location;
+  if (asn) return asn;
+  return "unknown";
 }
 
 const SCW_TEM_ENDPOINT = (region: string) =>
@@ -26,7 +46,7 @@ function buildMagicLinkSubject(): string {
   return "Your JTransfer sign-in link";
 }
 
-function buildMagicLinkText({ link, expiresAt, ip, userAgent }: SendMagicLinkInput): string {
+function buildMagicLinkText({ link, expiresAt, ipContext, userAgent }: SendMagicLinkInput): string {
   const expiresIn = Math.max(1, Math.round((expiresAt.getTime() - Date.now()) / 60000));
   return [
     "Sign in to JTransfer",
@@ -42,8 +62,11 @@ function buildMagicLinkText({ link, expiresAt, ip, userAgent }: SendMagicLinkInp
     "original device — no sign-in happens on the wrong device.",
     "",
     "Request details:",
-    `  IP: ${ip ?? "unknown"}`,
+    `  Location: ${formatLocation(ipContext)}`,
     `  Browser: ${userAgent ?? "unknown"}`,
+    "",
+    "We show approximate location and network rather than your IP address.",
+    "JTransfer does not store the IP itself.",
     "",
     "If you didn't request this, ignore this email — no account changes were made.",
     "",
@@ -64,11 +87,12 @@ function buildMagicLinkHtml(input: SendMagicLinkInput): string {
     `  <p style="font-size:13px;color:#555;">Or paste this URL into your browser:<br><code style="word-break:break-all;">${escapeHtml(input.link)}</code></p>`,
     '  <p style="font-size:13px;color:#555;">Opening this link on a different device than the one you started signing in on will show you a short code to type back into your original device — no sign-in happens on the wrong device.</p>',
     '  <hr style="border:none;border-top:1px solid #eee;margin:24px 0;">',
-    '  <p style="font-size:12px;color:#666;">Request details — IP: ' +
-      escapeHtml(input.ip ?? "unknown") +
+    '  <p style="font-size:12px;color:#666;">Request details — Location: ' +
+      escapeHtml(formatLocation(input.ipContext)) +
       " &middot; Browser: " +
       escapeHtml(input.userAgent ?? "unknown") +
       "</p>",
+    '  <p style="font-size:12px;color:#666;">We show approximate location and network rather than your IP address. JTransfer does not store the IP itself.</p>',
     '  <p style="font-size:12px;color:#666;">If you didn\'t request this, ignore this email — no account changes were made.</p>',
     "</body></html>",
   ].join("\n");

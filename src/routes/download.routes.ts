@@ -1,8 +1,8 @@
 import { Elysia, t } from 'elysia';
 import { getCompletedValidTransfer, getTransferById, getFilesByTransferId, getFileById, claimDownloadSlot, verifyTransferPassword } from '../services/file.service';
 import { getPresignedDownloadUrl } from '../services/r2.service';
-import { checkRateLimit, rateLimiters } from '../services/ratelimit.service';
-import { normalizeClientIp } from '../utils/ip';
+import { checkIpRateLimit, rateLimiters } from '../services/ratelimit.service';
+import { ipContextPlugin } from '../auth/ipContextPlugin';
 import { issueDownloadToken, verifyDownloadToken } from '../auth/downloadTokens';
 
 // nanoid validation pattern (21 chars, URL-safe alphabet)
@@ -12,17 +12,16 @@ function isValidNanoId(id: string): boolean {
 }
 
 export const downloadRoutes = new Elysia({ prefix: '/api/download' })
+  .use(ipContextPlugin)
   // Get transfer metadata with all files
-  .get('/transfer/:id', async ({ params, request, set }) => {
+  .get('/transfer/:id', async ({ params, ipContext, set }) => {
     // Validate ID format first (prevents path traversal)
     if (!isValidNanoId(params.id)) {
       set.status = 404;
       return { error: 'Transfer not found or has expired' };
     }
 
-    const ip = normalizeClientIp(request.headers.get('cf-connecting-ip'), request.headers.get('x-forwarded-for'));
-
-    const rateLimit = await checkRateLimit(ip, rateLimiters.download);
+    const rateLimit = await checkIpRateLimit(ipContext, rateLimiters.download);
     if (!rateLimit.allowed) {
       set.status = 429;
       set.headers['Retry-After'] = String(rateLimit.resetIn);
@@ -69,16 +68,14 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
   })
 
   // Verify password and get full metadata
-  .post('/transfer/:id/verify', async ({ params, body, request, set }) => {
+  .post('/transfer/:id/verify', async ({ params, body, ipContext, set }) => {
     // Validate ID format first
     if (!isValidNanoId(params.id)) {
       set.status = 404;
       return { error: 'Transfer not found or has expired' };
     }
 
-    const ip = normalizeClientIp(request.headers.get('cf-connecting-ip'), request.headers.get('x-forwarded-for'));
-
-    const rateLimit = await checkRateLimit(ip, rateLimiters.password);
+    const rateLimit = await checkIpRateLimit(ipContext, rateLimiters.password);
     if (!rateLimit.allowed) {
       set.status = 429;
       set.headers['Retry-After'] = String(rateLimit.resetIn);
@@ -138,17 +135,15 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
   })
 
   // Get presigned download URL for a file
-  .get('/file/:id/url', async ({ params, request, set }) => {
+  .get('/file/:id/url', async ({ params, ipContext, request, set }) => {
     // Validate ID format first
     if (!isValidNanoId(params.id)) {
       set.status = 404;
       return { error: 'File not found' };
     }
 
-    const ip = normalizeClientIp(request.headers.get('cf-connecting-ip'), request.headers.get('x-forwarded-for'));
-
     // Per-minute rate limit
-    const rateLimit = await checkRateLimit(ip, rateLimiters.download);
+    const rateLimit = await checkIpRateLimit(ipContext, rateLimiters.download);
     if (!rateLimit.allowed) {
       set.status = 429;
       set.headers['Retry-After'] = String(rateLimit.resetIn);
@@ -156,7 +151,7 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
     }
 
     // Daily download limit
-    const dailyLimit = await checkRateLimit(ip, rateLimiters.dailyDownloads);
+    const dailyLimit = await checkIpRateLimit(ipContext, rateLimiters.dailyDownloads);
     if (!dailyLimit.allowed) {
       set.status = 429;
       set.headers['Retry-After'] = String(dailyLimit.resetIn);

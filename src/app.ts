@@ -4,12 +4,14 @@
 import { cors } from "@elysiajs/cors";
 import { Elysia } from "elysia";
 import { env } from "./config/env";
+import { ipContextPlugin } from "./auth/ipContextPlugin";
 import { authRoutes } from "./routes/auth.routes";
 import { downloadRoutes } from "./routes/download.routes";
 import { meRoutes } from "./routes/me.routes";
 import { passkeyRoutes } from "./routes/passkey.routes";
 import { uploadRoutes } from "./routes/upload.routes";
 import { validateRoutes } from "./routes/validate.routes";
+import { vaultRoutes } from "./routes/vault.routes";
 
 export function createApp() {
   const corsOrigins = env.CORS_ORIGINS.split(",")
@@ -29,11 +31,13 @@ export function createApp() {
         exposeHeaders: ["Content-Length", "Content-Type"],
       }),
     )
+    .use(ipContextPlugin)
     .get("/health", () => ({ status: "ok", timestamp: new Date().toISOString() }))
     .use(authRoutes)
     .use(passkeyRoutes)
     .use(uploadRoutes)
     .use(downloadRoutes)
     .use(meRoutes)
+    .use(vaultRoutes)
     .use(validateRoutes);
 }

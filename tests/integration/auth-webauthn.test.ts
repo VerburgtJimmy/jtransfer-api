@@ -358,7 +358,6 @@ describe("listAuthenticatorsForUser", () => {
         transports: [],
         deviceType: "multiDevice",
         backedUp: true,
-        supportsPrf: false,
         nickname: "Alice phone",
       },
       {
@@ -370,7 +369,6 @@ describe("listAuthenticatorsForUser", () => {
         transports: [],
         deviceType: "singleDevice",
         backedUp: false,
-        supportsPrf: true,
         nickname: "Bob laptop",
       },
     ]);
@@ -406,7 +404,6 @@ describe("deleteAuthenticator", () => {
       transports: [],
       deviceType: "multiDevice",
       backedUp: true,
-      supportsPrf: false,
       nickname: null,
     });
 
@@ -433,7 +430,6 @@ describe("deleteAuthenticator", () => {
       transports: [],
       deviceType: "multiDevice",
       backedUp: true,
-      supportsPrf: false,
       nickname: null,
     });
 
@@ -472,7 +468,6 @@ describe("renameAuthenticator", () => {
       transports: [],
       deviceType: "multiDevice",
       backedUp: true,
-      supportsPrf: false,
       nickname: "Old name",
     });
 
@@ -497,7 +492,6 @@ describe("renameAuthenticator", () => {
       transports: [],
       deviceType: "multiDevice",
       backedUp: true,
-      supportsPrf: false,
       nickname: "Old name",
     });
 
@@ -522,7 +516,6 @@ describe("renameAuthenticator", () => {
       transports: [],
       deviceType: "multiDevice",
       backedUp: true,
-      supportsPrf: false,
       nickname: "Alice key",
     });
 
@@ -557,7 +550,6 @@ describe("authenticator cascade", () => {
       transports: [],
       deviceType: "multiDevice",
       backedUp: true,
-      supportsPrf: false,
       nickname: null,
     });
 

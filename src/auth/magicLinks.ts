@@ -25,7 +25,6 @@ export const CODE_MAX_ATTEMPTS = 3;
 
 interface IssueMagicLinkInput {
   email: string;
-  ip: string | null;
   userAgent: string | null;
 }
 
@@ -35,6 +34,10 @@ interface IssueMagicLinkResult {
   expiresAt: Date;
 }
 
+// IP minimization (audit doc 19 §2.1, ADR-0002): `magic_link_tokens` no
+// longer carries an IP column. The token itself is the secret — 256-bit,
+// single-use, 15-min TTL, hashed at rest — so an IP comparison adds no
+// meaningful defence and breaks the legitimate cross-device flow.
 export async function issueMagicLink(input: IssueMagicLinkInput): Promise<IssueMagicLinkResult> {
   const token = generateToken();
   const tokenHash = await hashToken(token);
@@ -49,7 +52,6 @@ export async function issueMagicLink(input: IssueMagicLinkInput): Promise<IssueM
     // codeHash stays NULL — it's only minted on cross-device click in
     // claimMagicLinkOrIssueCode.
     expiresAt,
-    ip: input.ip,
     userAgent: input.userAgent,
   });
 

@@ -3,6 +3,9 @@
 //
 // Origin-header check on state-changing methods provides CSRF defence
 // alongside SameSite=Lax (per audit doc 18 §6, ASVS 4.2.2).
+//
+// Also fires the session-anomaly check (audit doc 19 §2.2 / D-082) once
+// `me` is resolved. Log-only — see `sessionAnomaly.ts`.
 
 import { Elysia } from "elysia";
 import { eq } from "drizzle-orm";
@@ -10,6 +13,8 @@ import { db } from "../db";
 import { users, type User } from "../db/schema";
 import { env } from "../config/env";
 import { SESSION_COOKIE_NAME, validateSession } from "./sessions";
+import { detectAndReportSessionAnomaly } from "./sessionAnomaly";
+import { resolveIpContext } from "../utils/ipContext";
 
 const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -71,6 +76,19 @@ export const authPlugin = new Elysia({ name: "auth" })
         originRejected: false,
       };
     }
+
+    // Fire-and-forget anomaly detection. Resolved here (rather than from
+    // the ipContextPlugin) so the middleware stays self-contained and
+    // there's no derive-ordering coupling between plugins.
+    detectAndReportSessionAnomaly({
+      session,
+      ipContext: resolveIpContext(request.headers),
+      userId: user.id,
+      email: user.email,
+      userAgent: request.headers.get("user-agent"),
+    }).catch((err) => {
+      console.error("[session-anomaly] detection failed:", err);
+    });
 
     return {
       me: user as User | null,

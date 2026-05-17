@@ -1,12 +1,20 @@
 // Session lifecycle: create, validate (with sliding-idle refresh), revoke.
 // See docs/audit/18-auth-security-baseline.md §3.
+//
+// IP minimization (audit doc 19, ADR-0002): each session carries a
+// per-session 32-byte `correlationSecret` minted at create time. The
+// stored `ipHmac` is HMAC-SHA-256(correlationSecret, raw_ip). On revoke
+// or expiry the secret is wiped, after which the stored ipHmac is
+// permanently un-correlatable to any IP.
 
+import { randomBytes } from "node:crypto";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db } from "../db";
 import { sessions, type Session } from "../db/schema";
 import { env } from "../config/env";
 import { generateToken, hashToken } from "./tokens";
+import type { IpContext } from "../utils/ipContext";
 
 // The `__Host-` prefix requires the `Secure` flag, which browsers (correctly)
 // only honour over HTTPS. Local dev runs on `http://localhost`, so we fall
@@ -24,7 +32,7 @@ export const SESSION_REFRESH_THROTTLE_MS = 5 * 60 * 1000; // 5 minutes
 
 interface CreateSessionInput {
   userId: string;
-  ip: string | null;
+  ipContext: IpContext;
   userAgent: string | null;
   /**
    * The authenticator that minted this session, if any. Set only by the
@@ -47,6 +55,11 @@ export async function createSession(input: CreateSessionInput): Promise<CreateSe
   const expiresAt = new Date(now.getTime() + SESSION_IDLE_MS);
   const absoluteExpiresAt = new Date(now.getTime() + SESSION_ABSOLUTE_MS);
 
+  // Per-session correlation secret. Wiped on revoke/expiry, after which
+  // the stored ipHmac is permanently un-correlatable.
+  const correlationSecret = randomBytes(32);
+  const ipHmac = input.ipContext.hmac(correlationSecret);
+
   const [session] = await db
     .insert(sessions)
     .values({
@@ -56,7 +69,10 @@ export async function createSession(input: CreateSessionInput): Promise<CreateSe
       expiresAt,
       absoluteExpiresAt,
       lastSeenAt: now,
-      ip: input.ip,
+      country: normaliseCountry(input.ipContext.country),
+      asn: input.ipContext.asn,
+      ipHmac,
+      correlationSecret,
       userAgent: input.userAgent,
       authenticatorId: input.authenticatorId ?? null,
     })
@@ -67,6 +83,11 @@ export async function createSession(input: CreateSessionInput): Promise<CreateSe
   }
 
   return { session, token };
+}
+
+function normaliseCountry(country: string): string | null {
+  if (!country || country === "unknown") return null;
+  return country.toUpperCase().slice(0, 2);
 }
 
 /**
@@ -111,16 +132,19 @@ export async function validateSession(token: string): Promise<Session | null> {
 }
 
 export async function revokeSession(sessionId: string): Promise<void> {
+  // Wipe correlation_secret + ip_hmac at revoke time (audit doc 19 §2.2,
+  // ADR-0002). The row lingers ≤7d for audit visibility, but no derived
+  // IP signal survives beyond the revoke moment.
   await db
     .update(sessions)
-    .set({ revokedAt: new Date() })
+    .set({ revokedAt: new Date(), correlationSecret: null, ipHmac: null })
     .where(and(eq(sessions.id, sessionId), isNull(sessions.revokedAt)));
 }
 
 export async function revokeAllSessionsForUser(userId: string): Promise<number> {
   const result = await db
     .update(sessions)
-    .set({ revokedAt: new Date() })
+    .set({ revokedAt: new Date(), correlationSecret: null, ipHmac: null })
     .where(and(eq(sessions.userId, userId), isNull(sessions.revokedAt)))
     .returning({ id: sessions.id });
   return result.length;

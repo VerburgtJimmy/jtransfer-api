@@ -8,6 +8,7 @@
     "db:migrate": "bun run src/db/migrate.ts",
     "db:push": "drizzle-kit push",
     "auth:smoke": "bun run scripts/auth-smoke.ts",
+    "check:no-raw-ip": "bun run scripts/check-no-raw-ip.ts",
     "prepare": "lefthook install || true"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
     "drizzle-orm": "^0.45.2",
     "elysia": "^1.4.22",
     "ioredis": "^5.9.2",
+    "maxmind": "^5.0.6",
     "nanoid": "^5.0.9",
     "postgres": "^3.4.5"
   },

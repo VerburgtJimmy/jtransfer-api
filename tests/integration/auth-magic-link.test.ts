@@ -34,7 +34,6 @@ afterAll(async () => {
 async function issue(email = "alice@example.test") {
   return issueMagicLink({
     email,
-    ip: null,
     userAgent: "bun-test",
   });
 }
@@ -76,7 +75,6 @@ describe("issueMagicLink", () => {
   it("normalises the email to lowercase + trimmed", async () => {
     const { pendingSessionId } = await issueMagicLink({
       email: "  MIXED.Case@Example.test  ",
-      ip: null,
       userAgent: null,
     });
     const row = await loadRow(pendingSessionId);

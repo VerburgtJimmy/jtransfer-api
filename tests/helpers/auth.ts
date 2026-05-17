@@ -6,6 +6,16 @@ import { nanoid } from "nanoid";
 import { db } from "../../src/db";
 import { users, type User } from "../../src/db/schema";
 import { createSession, SESSION_COOKIE_NAME } from "../../src/auth/sessions";
+import { resolveIpContext, type IpContext } from "../../src/utils/ipContext";
+
+/**
+ * Fixture IpContext for in-process tests. Resolves against an empty headers
+ * bag so country = "unknown", asn = null, city = null, and hmac() keys
+ * against a constant null-byte input. Deterministic — never call MMDB.
+ */
+export function testIpContext(): IpContext {
+  return resolveIpContext(new Headers());
+}
 
 export async function createTestUser(email?: string): Promise<User> {
   const [user] = await db
@@ -25,7 +35,7 @@ export async function createAuthedUser(email?: string): Promise<{ user: User; co
   const user = await createTestUser(email);
   const { token } = await createSession({
     userId: user.id,
-    ip: null,
+    ipContext: testIpContext(),
     userAgent: "bun-test",
   });
   return { user, cookie: `${SESSION_COOKIE_NAME}=${token}` };

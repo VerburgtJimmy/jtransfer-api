@@ -18,6 +18,8 @@ import {
 } from "../db/schema";
 import { normaliseEmail } from "./tokens";
 import { purgeOwnerDeletedTransfer } from "../services/file.service";
+import { getActiveSalt } from "../services/saltService";
+import type { IpContext } from "../utils/ipContext";
 
 export async function findUserByEmail(email: string): Promise<User | null> {
   const normalised = normaliseEmail(email);
@@ -54,7 +56,7 @@ export async function findUserById(id: string): Promise<User | null> {
 
 interface EraseAccountInput {
   user: User;
-  ip: string | null;
+  ipContext: IpContext;
   userAgent: string | null;
 }
 
@@ -62,7 +64,7 @@ interface EraseAccountInput {
 // cascade order. Owned transfers + R2 objects are purged first (best-effort,
 // outside the DB transaction); then a single DB transaction handles all
 // row-level operations atomically.
-export async function eraseAccount({ user, ip, userAgent }: EraseAccountInput): Promise<void> {
+export async function eraseAccount({ user, ipContext, userAgent }: EraseAccountInput): Promise<void> {
   // Step 2: purge owned, not-already-soft-deleted transfers.
   const owned = await db
     .select()
@@ -95,11 +97,18 @@ export async function eraseAccount({ user, ip, userAgent }: EraseAccountInput): 
       .where(eq(authEvents.userId, user.id));
 
     // Step 7: write account_deleted audit row inside the same transaction.
+    // Per audit doc 19 §2 we no longer store raw IP — only the country/ASN
+    // and an HMAC correlator keyed under the active auth_events salt.
+    const salt = await getActiveSalt("auth_events");
+    const correlator = ipContext.hmac(salt.secret);
     await tx.insert(authEvents).values({
       eventType: "account_deleted",
       userId: user.id,
       email: null,
-      ip: ip ?? null,
+      country: ipContext.country === "unknown" ? null : ipContext.country.toUpperCase().slice(0, 2),
+      asn: ipContext.asn,
+      ipCorrelator: correlator,
+      saltId: salt.id,
       userAgent: userAgent ?? null,
     });
 
@@ -112,6 +121,12 @@ export async function eraseAccount({ user, ip, userAgent }: EraseAccountInput): 
 // Positive-list scope per D-094: no token hashes, no password hashes, no
 // R2 storage keys. Encrypted filename material is included so the user can
 // reconstruct filenames with the key from their share link.
+//
+// Per audit doc 19 / ADR-0002 (IP minimization) raw IPs are no longer
+// stored, so they no longer appear in the export. Sessions carry the
+// country + ASN we derived at create time; magic-link rows carry no
+// network signal at all; auth_events carry country + ASN (the HMAC
+// correlator is internal-only and never surfaced).
 export interface AccountExport {
   exportFormatVersion: 1;
   exportedAt: string;
@@ -127,20 +142,21 @@ export interface AccountExport {
     expiresAt: string;
     absoluteExpiresAt: string;
     revokedAt: string | null;
-    ip: string | null;
+    country: string | null;
+    asn: number | null;
     userAgent: string | null;
   }>;
   magicLinkRequests: Array<{
     createdAt: string;
     expiresAt: string;
     consumedAt: string | null;
-    ip: string | null;
     userAgent: string | null;
   }>;
   authEvents: Array<{
     eventType: string;
     createdAt: string;
-    ip: string | null;
+    country: string | null;
+    asn: number | null;
     userAgent: string | null;
   }>;
   transfers: Array<{
@@ -218,20 +234,21 @@ export async function buildAccountExport(user: User): Promise<AccountExport> {
       expiresAt: s.expiresAt.toISOString(),
       absoluteExpiresAt: s.absoluteExpiresAt.toISOString(),
       revokedAt: s.revokedAt ? s.revokedAt.toISOString() : null,
-      ip: s.ip ?? null,
+      country: s.country ?? null,
+      asn: s.asn ?? null,
       userAgent: s.userAgent ?? null,
     })),
     magicLinkRequests: magicLinkRows.map((m) => ({
       createdAt: m.createdAt.toISOString(),
       expiresAt: m.expiresAt.toISOString(),
       consumedAt: m.consumedAt ? m.consumedAt.toISOString() : null,
-      ip: m.ip ?? null,
       userAgent: m.userAgent ?? null,
     })),
     authEvents: eventRows.map((e) => ({
       eventType: e.eventType,
       createdAt: e.createdAt.toISOString(),
-      ip: e.ip ?? null,
+      country: e.country ?? null,
+      asn: e.asn ?? null,
       userAgent: e.userAgent ?? null,
     })),
     transfers: transferRows.map((t) => ({

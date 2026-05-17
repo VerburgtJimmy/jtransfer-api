@@ -5,6 +5,7 @@
 
 import { Elysia, t } from "elysia";
 import { authPlugin } from "../auth/middleware";
+import { ipContextPlugin } from "../auth/ipContextPlugin";
 import { logAuthEvent } from "../auth/events";
 import { buildAccountExport, eraseAccount } from "../auth/users";
 import { SESSION_COOKIE_NAME, SESSION_COOKIE_OPTIONS } from "../auth/sessions";
@@ -12,7 +13,6 @@ import { normaliseEmail } from "../auth/tokens";
 import { getFileMetadataForOwnedTransfer, listTransfersForUser, softDeleteOwnedTransfer } from "../services/file.service";
 import { sendAccountDeletedNotification } from "../services/email.service";
 import { checkRateLimit, rateLimiters } from "../services/ratelimit.service";
-import { ipForStorage, normalizeClientIp } from "../utils/ip";
 
 const NANOID_PATTERN = /^[A-Za-z0-9_-]{21}$/;
 const DEFAULT_PAGE_SIZE = 20;
@@ -20,6 +20,7 @@ const MAX_PAGE_SIZE = 50;
 
 export const meRoutes = new Elysia({ prefix: "/api/me" })
   .use(authPlugin)
+  .use(ipContextPlugin)
 
   .get(
     "/transfers",
@@ -102,7 +103,7 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
 
   .delete(
     "/transfers/:id",
-    async ({ me, params, originRejected, request, set }) => {
+    async ({ me, params, ipContext, originRejected, request, set }) => {
       if (originRejected) {
         set.status = 403;
         return { error: "Forbidden" };
@@ -132,17 +133,11 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
         return { error: "Not found" };
       }
 
-      const ipDb = ipForStorage(
-        normalizeClientIp(
-          request.headers.get("cf-connecting-ip"),
-          request.headers.get("x-forwarded-for"),
-        ),
-      );
       await logAuthEvent({
         eventType: "transfer_deleted",
         userId: me.id,
         email: me.email,
-        ip: ipDb,
+        ipContext,
         userAgent: request.headers.get("user-agent"),
       });
 
@@ -154,7 +149,7 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
   // Account export (GDPR Article 20). See docs/audit/24-right-to-portability.md.
   .get(
     "/export",
-    async ({ me, request, set }) => {
+    async ({ me, ipContext, request, set }) => {
       if (!me) {
         set.status = 401;
         return { error: "Not authenticated" };
@@ -169,17 +164,11 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
 
       const exportData = await buildAccountExport(me);
 
-      const ipDb = ipForStorage(
-        normalizeClientIp(
-          request.headers.get("cf-connecting-ip"),
-          request.headers.get("x-forwarded-for"),
-        ),
-      );
       await logAuthEvent({
         eventType: "account_exported",
         userId: me.id,
         email: me.email,
-        ip: ipDb,
+        ipContext,
         userAgent: request.headers.get("user-agent"),
       });
 
@@ -196,7 +185,7 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
   // Account erasure. See docs/audit/23-right-to-erasure.md.
   .delete(
     "/",
-    async ({ me, originRejected, request, body, cookie, set }) => {
+    async ({ me, ipContext, originRejected, request, body, cookie, set }) => {
       if (originRejected) {
         set.status = 403;
         return { error: "Forbidden" };
@@ -222,18 +211,12 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
       }
 
       const userAgent = request.headers.get("user-agent");
-      const ipDb = ipForStorage(
-        normalizeClientIp(
-          request.headers.get("cf-connecting-ip"),
-          request.headers.get("x-forwarded-for"),
-        ),
-      );
 
       // Snapshot email before erasure — we need it for the notification send
       // after the user row is gone.
       const formerEmail = me.email;
 
-      await eraseAccount({ user: me, ip: ipDb, userAgent });
+      await eraseAccount({ user: me, ipContext, userAgent });
 
       // Best-effort notification (D-091). Failure must not turn the response
       // into a 5xx — the erasure already committed.

@@ -102,6 +102,28 @@ export const env = {
   WEBAUTHN_RP_ORIGIN: process.env.WEBAUTHN_RP_ORIGIN ?? (process.env.APP_URL ?? "http://localhost:5173"),
   WEBAUTHN_RP_NAME: process.env.WEBAUTHN_RP_NAME ?? "JTransfer",
 
+  // IP minimization / GeoIP (audit doc 19, ADR-0002).
+  //
+  // Raw client IPs are never stored. They are resolved to country + ASN
+  // (+ city for outbound email recognition copy) and HMAC'd with a
+  // rotating salt for correlation. Country/ASN come from Cloudflare
+  // `CF-IPCountry` / `CF-IPASN` when present; the MMDB files are the
+  // fallback when the API is hit directly (dev, smoke tests, future
+  // non-CF environments).
+  //
+  // `MAXMIND_ACCOUNT_ID` + `MAXMIND_LICENSE_KEY` are only needed by the
+  // weekly refresh script (`infra/setup-geoip.sh`); the running API
+  // just reads the MMDB files from disk.
+  MAXMIND_ACCOUNT_ID: process.env.MAXMIND_ACCOUNT_ID ?? "",
+  MAXMIND_LICENSE_KEY: process.env.MAXMIND_LICENSE_KEY ?? "",
+  GEOIP_DIR: getEnv("GEOIP_DIR", "/var/lib/geoip"),
+  ENABLE_IP_DERIVATION: (process.env.ENABLE_IP_DERIVATION ?? "true") === "true",
+  // Session-anomaly detection (audit doc 19 §2.2). Log-only — no email, no
+  // auto-revoke. Surfaced as the off-switch for the same-session ip_hmac
+  // comparison in case it ever produces noise we want to silence quickly.
+  ENABLE_SESSION_ANOMALY_DETECTION:
+    (process.env.ENABLE_SESSION_ANOMALY_DETECTION ?? "true") === "true",
+
   NODE_ENV,
   IS_PRODUCTION,
 };

@@ -26,7 +26,7 @@ const TABLES_TO_TRUNCATE = [
   "sessions",
   "magic_link_tokens",
   "auth_events",
-  "authenticator_prf_salts",
+  "user_vaults",
   "webauthn_challenges",
   "authenticators",
   "users",

@@ -2,6 +2,7 @@ import { lt, or, and, isNotNull } from 'drizzle-orm';
 import { getExpiredTransfers, getAbandonedTransfers, getSoftDeletedTransfers, deleteExpiredTransfer, abortTransfer, purgeOwnerDeletedTransfer } from './file.service';
 import { db } from '../db';
 import { authEvents, magicLinkTokens, sessions } from '../db/schema';
+import { rotateSalts } from './saltService';
 
 export async function cleanupExpiredTransfers(): Promise<number> {
   const expiredTransfers = await getExpiredTransfers();
@@ -80,8 +81,8 @@ export async function cleanupAuthArtefacts(): Promise<{ tokens: number; sessions
     )
     .returning({ id: sessions.id });
 
-  // Auth events: 90-day retention.
-  const eventCutoff = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+  // Auth events: 30-day retention (audit doc 19 D-081 — cut from 90d).
+  const eventCutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const events = await db
     .delete(authEvents)
     .where(lt(authEvents.createdAt, eventCutoff))
@@ -109,6 +110,16 @@ export function startCleanupJob(): void {
       }
     } catch (err) {
       console.error('[cleanup] Auth purge failed:', err);
+    }
+    try {
+      const salt = await rotateSalts();
+      if (salt.rotated.length > 0 || salt.purged > 0) {
+        console.log(
+          `[cleanup] Salts: rotated [${salt.rotated.join(',')}], purged ${salt.purged}`,
+        );
+      }
+    } catch (err) {
+      console.error('[cleanup] Salt rotation failed:', err);
     }
   };
 

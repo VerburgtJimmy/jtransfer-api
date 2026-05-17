@@ -1,5 +1,7 @@
 import Redis from 'ioredis';
 import { env } from '../config/env';
+import { getActiveSalt } from './saltService';
+import type { IpContext } from '../utils/ipContext';
 
 // Sliding-window check + add in one round trip.
 // Without this, two concurrent MULTIs against the same key can each see
@@ -126,8 +128,9 @@ interface RateLimitResult {
 }
 
 /**
- * Check rate limit for an identifier (usually IP address)
- * Uses Redis if available, falls back to in-memory
+ * Check rate limit for an opaque identifier — used for non-IP keys
+ * (email, userId, transferId). IP-keyed limiters MUST use
+ * `checkIpRateLimit` instead so the IP never lands in a Redis key.
  */
 export async function checkRateLimit(
   identifier: string,
@@ -141,6 +144,29 @@ export async function checkRateLimit(
   }
 
   return checkMemoryRateLimit(key, config);
+}
+
+/**
+ * IP-keyed rate-limit check. The Redis key is built from
+ * `HMAC(ratelimit_salt, ip)` — the raw IP never enters a key, log, or
+ * counter (audit doc 19 §4.2, ADR-0002, D-082, D-086).
+ *
+ * The ratelimit salt rotates every 35 days, retained 35 days. That
+ * cadence is `max(rate-limit window) + buffer`, so a single salt always
+ * covers a full counter lifetime — counters expire before salts rotate,
+ * and no rehash is ever needed.
+ */
+export async function checkIpRateLimit(
+  ipContext: IpContext,
+  config: RateLimitConfig
+): Promise<RateLimitResult> {
+  const identifier = await ipRateLimitIdentifier(ipContext);
+  return checkRateLimit(identifier, config);
+}
+
+async function ipRateLimitIdentifier(ipContext: IpContext): Promise<string> {
+  const salt = await getActiveSalt("ratelimit");
+  return ipContext.hmac(salt.secret).toString("hex");
 }
 
 async function checkRedisRateLimit(
@@ -213,8 +239,9 @@ function checkMemoryRateLimit(
 }
 
 /**
- * Increment a counter and check if it exceeds the limit
- * Used for volume-based limits (e.g., daily upload bytes)
+ * Increment a counter and check if it exceeds the limit. Used for
+ * volume-based limits (e.g., daily upload bytes). Opaque identifier
+ * variant — see `checkIpVolumeLimit` for IP-keyed counters.
  */
 export async function checkVolumeLimit(
   identifier: string,
@@ -228,6 +255,18 @@ export async function checkVolumeLimit(
   }
 
   return checkMemoryVolumeLimit(key, config);
+}
+
+/**
+ * IP-keyed volume counter. Like `checkIpRateLimit` but for byte-counters
+ * (monthly upload volume). See `checkIpRateLimit` for the salt rationale.
+ */
+export async function checkIpVolumeLimit(
+  ipContext: IpContext,
+  config: VolumeLimitConfig
+): Promise<RateLimitResult> {
+  const identifier = await ipRateLimitIdentifier(ipContext);
+  return checkVolumeLimit(identifier, config);
 }
 
 async function checkRedisVolumeLimit(
@@ -307,6 +346,52 @@ function checkMemoryVolumeLimit(
   };
 }
 
+// Bumped whenever the rate-limit keyspace changes shape. Startup flushes
+// once if Redis doesn't already record this version, then sets it. So
+// the IP-minimization cutover (raw-IP keys → HMAC-IP keys) drops legacy
+// keys atomically on first boot post-deploy, but doesn't keep flushing
+// the new HMAC-keyed entries on every subsequent restart.
+const RATELIMIT_KEYSPACE_VERSION = '2';
+const RATELIMIT_VERSION_KEY = 'ratelimit:keyspace-version';
+
+/**
+ * One-shot startup flush of all rate-limit keys, gated by a Redis-stored
+ * keyspace version. Called once on boot. After the first successful
+ * flush the version key is set and subsequent boots are no-ops (D-086).
+ *
+ * Trade-off accepted: at most ~30d of free traffic for any user with an
+ * active monthly-upload counter at cutover. Bounded, small, and cleaner
+ * than rehashing one-way HMAC keys (mathematically impossible anyway).
+ */
+export async function flushLegacyRateLimitKeys(): Promise<number> {
+  const redisClient = getRedis();
+  if (!redisClient || !redisAvailable) {
+    // Memory-only mode has no cross-restart state, so nothing to flush.
+    return 0;
+  }
+
+  const current = await redisClient.get(RATELIMIT_VERSION_KEY);
+  if (current === RATELIMIT_KEYSPACE_VERSION) {
+    return 0;
+  }
+
+  let deleted = 0;
+  for (const pattern of ['ratelimit:*', 'volume:*']) {
+    let cursor = '0';
+    do {
+      const [next, keys] = await redisClient.scan(cursor, 'MATCH', pattern, 'COUNT', 1000);
+      cursor = next;
+      const targets = keys.filter((k) => k !== RATELIMIT_VERSION_KEY);
+      if (targets.length > 0) {
+        deleted += await redisClient.del(...targets);
+      }
+    } while (cursor !== '0');
+  }
+
+  await redisClient.set(RATELIMIT_VERSION_KEY, RATELIMIT_KEYSPACE_VERSION);
+  return deleted;
+}
+
 // Pre-configured rate limiters
 const DAY_SECONDS = 24 * 60 * 60;
 const MONTH_SECONDS = 30 * DAY_SECONDS;
@@ -340,4 +425,11 @@ export const rateLimiters = {
 
   // Per-user limit on GET /api/me/export (per audit doc 24 §7)
   accountExport: { prefix: 'account-export', windowSeconds: HOUR_SECONDS, maxRequests: 3 },
+
+  // Vault writes (ADR-0004). Setup is one-shot; password/phrase rewrap is
+  // gated to dampen brute-force-by-reupload of wrap blobs and accidental
+  // double-submits from the UI.
+  vaultSetup: { prefix: 'vault-setup', windowSeconds: HOUR_SECONDS, maxRequests: 5 },
+  vaultPasswordChange: { prefix: 'vault-password-change', windowSeconds: HOUR_SECONDS, maxRequests: 10 },
+  vaultPhraseRegenerate: { prefix: 'vault-phrase-regen', windowSeconds: HOUR_SECONDS, maxRequests: 5 },
 } as const;

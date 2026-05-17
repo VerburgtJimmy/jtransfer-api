@@ -43,6 +43,9 @@ jobs:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - run: bun test
+      # IP-minimization guardrail (audit doc 19 §4.6 / ADR-0002).
+      # Fails the build if a raw-IP read or persistence path slips back in.
+      - run: bun run check:no-raw-ip
       # Schema-drift guard: db:generate must be a no-op on a clean tree.
       # If Drizzle definitions diverge from the migration journal, generate
       # produces a new file and `git status` flags it — fail the build so

@@ -50,6 +50,20 @@
       "when": 1778778561861,
       "tag": "0006_transfer_vault_wrap",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1778793928813,
+      "tag": "0007_ip_minimization",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1778883862459,
+      "tag": "0008_vault_password_redesign",
+      "breakpoints": true
     }
   ]
 }

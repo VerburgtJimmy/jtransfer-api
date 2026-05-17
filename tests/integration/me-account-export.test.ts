@@ -14,7 +14,7 @@ import { createSession } from "../../src/auth/sessions";
 import { issueMagicLink } from "../../src/auth/magicLinks";
 import { logAuthEvent } from "../../src/auth/events";
 import { createFile, createTransfer } from "../../src/services/file.service";
-import { createAuthedUser } from "../helpers/auth";
+import { createAuthedUser, testIpContext } from "../helpers/auth";
 import { ensureMigrations, resetDb } from "../helpers/db";
 
 const APP_URL = process.env.APP_URL!;
@@ -72,12 +72,13 @@ describe("GET /api/me/export — happy path", () => {
 
     // Seed a richer fixture: a second session, a magic link, an auth event,
     // and an owned transfer with two files (one soft-deletable scenario).
-    await createSession({ userId: user.id, ip: null, userAgent: "second-device" });
-    await issueMagicLink({ email: user.email, ip: null, userAgent: null });
+    await createSession({ userId: user.id, ipContext: testIpContext(), userAgent: "second-device" });
+    await issueMagicLink({ email: user.email, userAgent: null });
     await logAuthEvent({
       eventType: "magic_link_consumed",
       userId: user.id,
       email: user.email,
+      ipContext: testIpContext(),
     });
     const owned = await createTransfer(1, "secretpass", undefined, user.id);
     await seedFile(owned.id, 100);

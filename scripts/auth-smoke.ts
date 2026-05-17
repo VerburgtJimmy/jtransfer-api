@@ -167,7 +167,7 @@ async function main() {
   await db.delete(magicLinkTokens).where(eq(magicLinkTokens.email, TEST_EMAIL));
 
   const { issueMagicLink } = await import("../src/auth/magicLinks");
-  const issued = await issueMagicLink({ email: TEST_EMAIL, ip: "127.0.0.1", userAgent: "auth-smoke" });
+  const issued = await issueMagicLink({ email: TEST_EMAIL, userAgent: "auth-smoke" });
   pass("issued a fresh magic-link token via library helper (plaintext captured)");
 
   // ─── Step 3: verify the token ─────────────────────────────────────────────
@@ -290,7 +290,7 @@ async function main() {
 
   // ─── Step 9: Origin-mismatch logout is rejected ───────────────────────────
   // Re-issue a fresh session for this check (logout above revoked the old one).
-  const issuedB = await issueMagicLink({ email: TEST_EMAIL, ip: "127.0.0.1", userAgent: "auth-smoke" });
+  const issuedB = await issueMagicLink({ email: TEST_EMAIL, userAgent: "auth-smoke" });
   const verifyResB = await fetch(
     `${API_BASE}/api/auth/verify?token=${encodeURIComponent(issuedB.token)}`,
     { redirect: "manual" },

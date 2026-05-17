@@ -30,24 +30,18 @@ export async function createTransfer(
 }
 
 // Marks the transfer live. Optional `vaultWrap` writes the per-transfer
-// vault columns in the same UPDATE — caller has already validated the
-// blob layout (60 bytes) and that `wrapCredentialId` belongs to the
-// signed-in user. Anonymous and unvaulted callers leave both NULL.
-// See docs/audit/28-dashboard-transfer-key-vault.md §4.
+// vault column in the same UPDATE — caller has already validated the
+// blob layout (60 bytes). Anonymous and unvaulted callers leave it NULL.
+// See docs/adr/0004-vault-redesign-password-and-recovery-phrase.md.
 export async function completeTransfer(
   id: string,
-  vaultWrap?: { wrappedKey: Uint8Array; wrapCredentialId: Uint8Array }
+  vaultWrap?: { wrappedKey: Uint8Array }
 ): Promise<void> {
   await db
     .update(transfers)
     .set({
       isCompleted: true,
-      ...(vaultWrap
-        ? {
-            wrappedKey: vaultWrap.wrappedKey,
-            wrapCredentialId: vaultWrap.wrapCredentialId,
-          }
-        : {}),
+      ...(vaultWrap ? { wrappedKey: vaultWrap.wrappedKey } : {}),
     })
     .where(eq(transfers.id, id));
 }
@@ -212,8 +206,8 @@ export async function markTransferAsDeleted(id: string): Promise<void> {
 
 // Owner-scoped list with per-row file aggregates. Cursor is the createdAt of
 // the last row from the previous page (ISO string). See docs/audit/20 §5.
-// `wrappedKey` + `wrapCredentialId` are base64url-encoded when present and
-// NULL when the row is unvaulted. See docs/audit/28 §4 + §5.
+// `wrappedKey` is base64url-encoded when present and NULL when the row is
+// unvaulted. See docs/adr/0004-vault-redesign-password-and-recovery-phrase.md.
 export interface OwnedTransferSummary {
   id: string;
   createdAt: Date;
@@ -224,12 +218,11 @@ export interface OwnedTransferSummary {
   isCompleted: boolean;
   hasPassword: boolean;
   wrappedKey: string | null;
-  wrapCredentialId: string | null;
 }
 
 function bytesToBase64Url(bytes: Uint8Array): string {
   // Node/Bun Buffer round-trips Uint8Array losslessly. base64url is the
-  // wire format for vault blobs per docs/audit/28 §5.
+  // wire format for vault blobs per ADR-0004.
   return Buffer.from(bytes).toString('base64url');
 }
 
@@ -255,7 +248,6 @@ export async function listTransfersForUser(
       isCompleted: transfers.isCompleted,
       passwordHash: transfers.passwordHash,
       wrappedKey: transfers.wrappedKey,
-      wrapCredentialId: transfers.wrapCredentialId,
       fileCount: sql<number>`coalesce(count(${files.id}) filter (where ${files.isDeleted} = false), 0)`,
       totalBytes: sql<number>`coalesce(sum(${files.size}) filter (where ${files.isDeleted} = false), 0)`,
     })
@@ -274,7 +266,6 @@ export async function listTransfersForUser(
     isCompleted: r.isCompleted,
     hasPassword: r.passwordHash !== null,
     wrappedKey: r.wrappedKey ? bytesToBase64Url(r.wrappedKey) : null,
-    wrapCredentialId: r.wrapCredentialId ? bytesToBase64Url(r.wrapCredentialId) : null,
     // postgres.js returns bigint aggregates as strings — coerce explicitly
     fileCount: Number(r.fileCount ?? 0),
     totalBytes: Number(r.totalBytes ?? 0),

@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, varchar, bigint, timestamp, integer, boolean, serial, uniqueIndex, index, inet, text, customType } from 'drizzle-orm/pg-core';
+import { pgTable, varchar, bigint, timestamp, integer, boolean, serial, uniqueIndex, index, text, customType } from 'drizzle-orm/pg-core';
 
 // Drizzle ORM ships a `bytea` type only via the experimental column builder
 // in some versions. customType is portable and lets us round-trip Uint8Array.
@@ -20,12 +20,12 @@ export const transfers = pgTable('transfers', {
   passwordHash: varchar('password_hash', { length: 255 }), // NULL = no password
   // NULL = anonymous transfer. See docs/audit/20-transfer-ownership.md.
   userId: varchar('user_id', { length: 21 }).references(() => users.id),
-  // Vault wrap layer — Phase F (doc 28). Both NULL on anonymous and on
-  // signed-in-without-vault rows; both set together on vaulted rows. Per D-113.
+  // Vault wrap layer — ADR-0004. NULL on anonymous rows; set on every
+  // signed-in upload (vault is mandatory post-redesign). Wraps K_transfer
+  // under the per-user K_vault — no per-credential reference, so a single
+  // wrap suffices.
   // wrappedKey wire layout: wrap_iv(12B) || ciphertext(32B) || tag(16B) = 60 bytes.
-  // wrapCredentialId stays opaque bytes — no hard FK, see doc 28 §4.
   wrappedKey: bytea('wrapped_key'),
-  wrapCredentialId: bytea('wrap_credential_id'),
 }, (table) => ({
   userIdIdx: index('transfers_user_id_idx')
     .on(table.userId)
@@ -76,6 +76,9 @@ export const users = pgTable('users', {
   tier: varchar('tier', { length: 16 }).default('free').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  // Set when the user finishes the mandatory vault setup flow (ADR-0004).
+  // The dashboard route guard treats NULL as "redirect to /setup/vault".
+  vaultSetupCompletedAt: timestamp('vault_setup_completed_at', { withTimezone: true }),
 }, (table) => ({
   emailUnique: uniqueIndex('users_email_unique').on(table.email),
 }));
@@ -91,7 +94,17 @@ export const sessions = pgTable('sessions', {
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
-  ip: inet('ip'),
+  // IP minimization (audit doc 19, ADR-0002). No raw IP stored.
+  // `country` is ISO 3166-1 alpha-2 or "XX" when unresolvable.
+  // `ip_hmac` is HMAC-SHA-256(correlation_secret, raw_ip) at session
+  // creation; recomputed and compared per request for anomaly detection.
+  // `correlation_secret` is 32 random bytes minted per session and
+  // wiped on revoke/expiry — once cleared, the stored ip_hmac is
+  // permanently un-correlatable to any IP.
+  country: varchar('country', { length: 2 }),
+  asn: integer('asn'),
+  ipHmac: bytea('ip_hmac'),
+  correlationSecret: bytea('correlation_secret'),
   userAgent: text('user_agent'),
   // Set on sessions minted via a passkey assertion (passkey/login/finish).
   // Drives the "Used to sign in here" hint and the pre-confirm warning on
@@ -117,7 +130,9 @@ export const magicLinkTokens = pgTable('magic_link_tokens', {
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   consumedAt: timestamp('consumed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  ip: inet('ip'),
+  // IP minimization (audit doc 19, ADR-0002): no IP column. The token
+  // itself is the secret; layering an IP check on top would block the
+  // legitimate cross-device happy path.
   userAgent: text('user_agent'),
 }, (table) => ({
   tokenHashUnique: uniqueIndex('magic_link_tokens_token_hash_unique').on(table.tokenHash),
@@ -127,18 +142,49 @@ export const magicLinkTokens = pgTable('magic_link_tokens', {
     .where(sql`${table.pendingSessionId} IS NOT NULL`),
 }));
 
-// 90-day retention; daily purge job. Per audit doc 18 §8.
+// 30-day retention (audit doc 19, D-081 — cut from 90d). Daily purge job.
 export const authEvents = pgTable('auth_events', {
   id: serial('id').primaryKey(),
   userId: varchar('user_id', { length: 21 }), // nullable — pre-account events log only email
   email: varchar('email', { length: 320 }), // captured for pre-account events
   eventType: varchar('event_type', { length: 32 }).notNull(),
-  ip: inet('ip'),
+  // IP minimization (audit doc 19, ADR-0002). No raw IP stored.
+  // `ip_correlator` is HMAC-SHA-256 keyed against the active `auth_events`
+  // salt (24h rotation). `salt_id` records which salt was active so the
+  // correlator can be reproduced for verification within the window;
+  // when the salt is purged (30d retention) the correlator becomes
+  // permanently un-correlatable.
+  country: varchar('country', { length: 2 }),
+  asn: integer('asn'),
+  ipCorrelator: bytea('ip_correlator'),
+  saltId: integer('salt_id').references(() => salts.id, { onDelete: 'set null' }),
   userAgent: text('user_agent'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   createdAtIdx: index('auth_events_created_at_idx').on(table.createdAt),
   userIdIdx: index('auth_events_user_id_idx').on(table.userId),
+  saltCorrelatorIdx: index('auth_events_salt_correlator_idx').on(table.saltId, table.ipCorrelator),
+}));
+
+// Per-purpose rotating salts for IP correlation (audit doc 19 §4.3,
+// ADR-0002, D-082). `namespace` discriminates between rotation cadences:
+//
+//   - 'auth_events'  — 24h rotation, 30d retention
+//   - 'ratelimit'    — 35d rotation, 35d retention
+//
+// `correlation_secret` for `sessions` is *not* in this table — it's
+// stored per-row on `sessions.correlation_secret` because per-session
+// secrets are per-row by construction.
+export const salts = pgTable('salts', {
+  id: serial('id').primaryKey(),
+  namespace: varchar('namespace', { length: 32 }).notNull(),
+  secret: bytea('secret').notNull(), // 32 random bytes
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+}, (table) => ({
+  activeIdx: index('salts_active_idx')
+    .on(table.namespace, table.createdAt.desc())
+    .where(sql`${table.retiredAt} IS NULL`),
 }));
 
 export type User = typeof users.$inferSelect;
@@ -149,14 +195,16 @@ export type MagicLinkToken = typeof magicLinkTokens.$inferSelect;
 export type NewMagicLinkToken = typeof magicLinkTokens.$inferInsert;
 export type AuthEvent = typeof authEvents.$inferSelect;
 export type NewAuthEvent = typeof authEvents.$inferInsert;
+export type Salt = typeof salts.$inferSelect;
+export type NewSalt = typeof salts.$inferInsert;
 
-// WebAuthn / passkeys — alternative primary authenticator. See audit doc 27.
+// WebAuthn / passkeys — alternative login factor. See audit doc 27.
 //
 // One row per enrolled credential. No attestation statements retained
 // (`attestation: none` at registration). `device_type` and `backed_up`
 // come from the authenticator data BS/BE flags and drive UX badges
-// ("Sync'd" vs "This device"). `supports_prf` is set true if the
-// registration response surfaced PRF capability — consumed in Phase F.
+// ("Sync'd" vs "This device"). Per ADR-0004, passkeys no longer
+// participate in vault key derivation — login factor only.
 export const authenticators = pgTable('authenticators', {
   id: varchar('id', { length: 21 }).primaryKey(), // nanoid
   userId: varchar('user_id', { length: 21 }).notNull().references(() => users.id, { onDelete: 'cascade' }),
@@ -166,7 +214,6 @@ export const authenticators = pgTable('authenticators', {
   transports: text('transports').array().default(sql`'{}'::text[]`).notNull(),
   deviceType: varchar('device_type', { length: 16 }).notNull(), // 'singleDevice' | 'multiDevice'
   backedUp: boolean('backed_up').notNull(),
-  supportsPrf: boolean('supports_prf').default(false).notNull(),
   nickname: varchar('nickname', { length: 64 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
@@ -192,23 +239,33 @@ export const webauthnChallenges = pgTable('webauthn_challenges', {
   expiresAtIdx: index('webauthn_challenges_expires_at_idx').on(table.expiresAt),
 }));
 
-// Per-credential per-purpose 32-byte salts for PRF-derived vault keys.
-// Rows created lazily on first PRF use in Phase F (doc 28); empty table
-// after Phase D landing. Salt rotation re-keys the purpose.
-export const authenticatorPrfSalts = pgTable('authenticator_prf_salts', {
-  id: varchar('id', { length: 21 }).primaryKey(), // nanoid
-  credentialId: bytea('credential_id').notNull(),
-  purpose: varchar('purpose', { length: 32 }).notNull(),
-  salt: bytea('salt').notNull(),
+// Per-user vault metadata. 1:1 with users. See ADR-0004.
+// Holds two AES-GCM wraps of the same random per-user K_vault:
+//   - wrap_password  = AES-GCM(KEK_password, K_vault)
+//     KEK_password = Argon2id(password, salt_password)
+//   - wrap_phrase    = AES-GCM(KEK_phrase, K_vault)
+//     KEK_phrase   = Argon2id(phrase_entropy, salt_phrase)
+// Either wrap decrypts the same K_vault. kdf_version is reserved for future
+// Argon2id parameter bumps — re-wrap lazily on next unlock.
+// Wire layout for the wrap columns: iv(12B) || ciphertext(32B) || tag(16B) = 60 bytes.
+// Salts are 16 random bytes (Argon2id input salt, distinct per wrap).
+export const userVaults = pgTable('user_vaults', {
+  userId: varchar('user_id', { length: 21 })
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  saltPassword: bytea('salt_password').notNull(),
+  saltPhrase: bytea('salt_phrase').notNull(),
+  wrapPassword: bytea('wrap_password').notNull(),
+  wrapPhrase: bytea('wrap_phrase').notNull(),
+  kdfVersion: integer('kdf_version').default(1).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-}, (table) => ({
-  credentialPurposeUnique: uniqueIndex('authenticator_prf_salts_credential_purpose_unique')
-    .on(table.credentialId, table.purpose),
-}));
+  passwordChangedAt: timestamp('password_changed_at', { withTimezone: true }),
+  phraseRegeneratedAt: timestamp('phrase_regenerated_at', { withTimezone: true }),
+});
 
 export type Authenticator = typeof authenticators.$inferSelect;
 export type NewAuthenticator = typeof authenticators.$inferInsert;
 export type WebauthnChallenge = typeof webauthnChallenges.$inferSelect;
 export type NewWebauthnChallenge = typeof webauthnChallenges.$inferInsert;
-export type AuthenticatorPrfSalt = typeof authenticatorPrfSalts.$inferSelect;
-export type NewAuthenticatorPrfSalt = typeof authenticatorPrfSalts.$inferInsert;
+export type UserVault = typeof userVaults.$inferSelect;
+export type NewUserVault = typeof userVaults.$inferInsert;

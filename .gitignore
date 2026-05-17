@@ -39,3 +39,9 @@ coverage/
 
 uploads/
 server
+
+# GeoIP databases — refreshed by infra/geoip/setup-geoip.sh, never committed.
+# MaxMind's licence forbids redistribution and the files are ~80 MB.
+*.mmdb
+infra/geoip/lib/
+infra/geoip/geoip.env

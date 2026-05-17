@@ -20,7 +20,7 @@ import { createSession, SESSION_COOKIE_NAME } from "../../src/auth/sessions";
 import { issueMagicLink } from "../../src/auth/magicLinks";
 import { logAuthEvent } from "../../src/auth/events";
 import { createFile, createTransfer } from "../../src/services/file.service";
-import { authedRequest, createAuthedUser, createTestUser } from "../helpers/auth";
+import { authedRequest, createAuthedUser, createTestUser, testIpContext } from "../helpers/auth";
 import { defaultR2Mock } from "../helpers/r2-mock";
 import { ensureMigrations, resetDb } from "../helpers/db";
 
@@ -71,6 +71,7 @@ describe("DELETE /api/me — happy path", () => {
       eventType: "magic_link_consumed",
       userId: user.id,
       email: user.email,
+      ipContext: testIpContext(),
     });
 
     // Seed an owned transfer with a file.
@@ -78,11 +79,11 @@ describe("DELETE /api/me — happy path", () => {
     await seedFile(owned.id, 512);
 
     // An open second session (will get hard-deleted with the user).
-    await createSession({ userId: user.id, ip: null, userAgent: "second-device" });
+    await createSession({ userId: user.id, ipContext: testIpContext(), userAgent: "second-device" });
 
     // An unconsumed magic-link token for the same email (sign-in attempt
     // dangling in the wild).
-    await issueMagicLink({ email: user.email, ip: null, userAgent: null });
+    await issueMagicLink({ email: user.email, userAgent: null });
 
     const res = await app.handle(
       new Request(`${APP_URL}/api/me`, deleteAccountInit({ confirmEmail: user.email }, cookie)),

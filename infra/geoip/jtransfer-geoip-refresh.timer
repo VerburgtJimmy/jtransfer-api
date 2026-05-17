@@ -1,0 +1,13 @@
+[Unit]
+Description=Weekly JTransfer GeoLite2 MMDB refresh (Wed 04:00 UTC)
+
+[Timer]
+# GeoLite2 is updated by MaxMind on Tuesdays. Refresh once on Wednesday to
+# pick up the new release without hammering MaxMind from a dozen jobs at once.
+OnCalendar=Wed *-*-* 04:00:00 UTC
+Persistent=true
+RandomizedDelaySec=1800
+Unit=jtransfer-geoip-refresh.service
+
+[Install]
+WantedBy=timers.target
