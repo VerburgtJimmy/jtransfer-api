@@ -3,12 +3,22 @@ import { nanoid } from 'nanoid';
 import { db } from '../db';
 import { transfers, files, transferEvents, type NewTransfer, type NewFile, type Transfer, type File } from '../db/schema';
 
+// Optional encrypted-title pair carried alongside transfer creation.
+// Both fields are set together or not at all (server invariant — see
+// docs/adr/0005-encrypted-transfer-title-scope.md). Caller validates
+// the base64 / length shape; this layer only persists.
+export interface TransferTitleInput {
+  encryptedTitle: string;
+  encryptedTitleIv: string;
+}
+
 // Transfer operations
 export async function createTransfer(
   expiresInHours: number,
   password?: string,
   maxDownloads?: number,
-  userId?: string | null
+  userId?: string | null,
+  title?: TransferTitleInput | null
 ): Promise<Transfer> {
   const id = nanoid();
   const expiresAt = new Date();
@@ -24,9 +34,39 @@ export async function createTransfer(
     maxDownloads: maxDownloads ?? null,
     isCompleted: false,
     userId: userId ?? null,
+    encryptedTitle: title?.encryptedTitle ?? null,
+    encryptedTitleIv: title?.encryptedTitleIv ?? null,
   }).returning();
 
   return transfer;
+}
+
+// Owner-scoped title update. Returns true on success, false when the
+// transfer doesn't exist, isn't owned by `userId`, or is soft-deleted —
+// the route layer collapses all three to a 404 to avoid an existence
+// oracle (docs/audit/20-transfer-ownership.md §4).
+//
+// Pass `null` for both fields to clear the title. The both-or-neither
+// invariant is enforced at the route layer before this is called.
+export async function setOwnedTransferTitle(
+  userId: string,
+  transferId: string,
+  encryptedTitle: string | null,
+  encryptedTitleIv: string | null,
+): Promise<boolean> {
+  const updated = await db
+    .update(transfers)
+    .set({ encryptedTitle, encryptedTitleIv })
+    .where(
+      and(
+        eq(transfers.id, transferId),
+        eq(transfers.userId, userId),
+        eq(transfers.isDeleted, false),
+      ),
+    )
+    .returning({ id: transfers.id });
+
+  return updated.length > 0;
 }
 
 // Marks the transfer live. Optional `vaultWrap` writes the per-transfer
@@ -218,6 +258,8 @@ export interface OwnedTransferSummary {
   isCompleted: boolean;
   hasPassword: boolean;
   wrappedKey: string | null;
+  encryptedTitle: string | null;
+  encryptedTitleIv: string | null;
 }
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -248,6 +290,8 @@ export async function listTransfersForUser(
       isCompleted: transfers.isCompleted,
       passwordHash: transfers.passwordHash,
       wrappedKey: transfers.wrappedKey,
+      encryptedTitle: transfers.encryptedTitle,
+      encryptedTitleIv: transfers.encryptedTitleIv,
       fileCount: sql<number>`coalesce(count(${files.id}) filter (where ${files.isDeleted} = false), 0)`,
       totalBytes: sql<number>`coalesce(sum(${files.size}) filter (where ${files.isDeleted} = false), 0)`,
     })
@@ -266,6 +310,8 @@ export async function listTransfersForUser(
     isCompleted: r.isCompleted,
     hasPassword: r.passwordHash !== null,
     wrappedKey: r.wrappedKey ? bytesToBase64Url(r.wrappedKey) : null,
+    encryptedTitle: r.encryptedTitle,
+    encryptedTitleIv: r.encryptedTitleIv,
     // postgres.js returns bigint aggregates as strings — coerce explicitly
     fileCount: Number(r.fileCount ?? 0),
     totalBytes: Number(r.totalBytes ?? 0),

@@ -419,6 +419,9 @@ export const rateLimiters = {
   // Per-user limits on /me/transfers (per audit doc 20 §6)
   meTransfersList: { prefix: 'me-transfers-list', windowSeconds: 60, maxRequests: 60 },
   meTransfersDelete: { prefix: 'me-transfers-delete', windowSeconds: 60, maxRequests: 10 },
+  // Per-user limit on title rewrites (ADR-0005). Generous for legitimate
+  // edits, tight enough to bound mass-rewrite under session compromise.
+  meTransferTitle: { prefix: 'me-transfer-title', windowSeconds: 60, maxRequests: 30 },
 
   // Per-user limit on DELETE /api/me (per audit doc 23 §7)
   accountDelete: { prefix: 'account-delete', windowSeconds: HOUR_SECONDS, maxRequests: 5 },

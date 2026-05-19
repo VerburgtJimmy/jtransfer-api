@@ -10,9 +10,14 @@ import { logAuthEvent } from "../auth/events";
 import { buildAccountExport, eraseAccount } from "../auth/users";
 import { SESSION_COOKIE_NAME, SESSION_COOKIE_OPTIONS } from "../auth/sessions";
 import { normaliseEmail } from "../auth/tokens";
-import { getFileMetadataForOwnedTransfer, listTransfersForUser, softDeleteOwnedTransfer } from "../services/file.service";
+import { getFileMetadataForOwnedTransfer, listTransfersForUser, setOwnedTransferTitle, softDeleteOwnedTransfer } from "../services/file.service";
 import { sendAccountDeletedNotification } from "../services/email.service";
 import { checkRateLimit, rateLimiters } from "../services/ratelimit.service";
+import {
+  ENCRYPTED_TITLE_IV_LENGTH,
+  ENCRYPTED_TITLE_MAX_LENGTH,
+  validateEncryptedTitle,
+} from "../utils/encryptedTitle";
 
 const NANOID_PATTERN = /^[A-Za-z0-9_-]{21}$/;
 const DEFAULT_PAGE_SIZE = 20;
@@ -98,6 +103,71 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
     },
     {
       params: t.Object({ id: t.String({ minLength: 21, maxLength: 21 }) }),
+    },
+  )
+
+  // Owner-only title rewrite. The title is encrypted client-side under
+  // the transfer's fragment key (ADR-0005); the server only persists the
+  // opaque ciphertext + IV. `null` for both fields clears the title;
+  // both-or-neither is enforced. Non-owner / not-found / soft-deleted
+  // collapse to 404 (D-088).
+  .put(
+    "/transfers/:id/title",
+    async ({ me, params, body, originRejected, set }) => {
+      if (originRejected) {
+        set.status = 403;
+        return { error: "Forbidden" };
+      }
+      if (!me) {
+        set.status = 401;
+        return { error: "Not authenticated" };
+      }
+
+      const limit = await checkRateLimit(me.id, rateLimiters.meTransferTitle);
+      if (!limit.allowed) {
+        set.status = 429;
+        set.headers["Retry-After"] = String(limit.resetIn);
+        return { error: "Rate limit exceeded. Try again later." };
+      }
+
+      if (!NANOID_PATTERN.test(params.id)) {
+        set.status = 404;
+        return { error: "Not found" };
+      }
+
+      const result = validateEncryptedTitle(body?.encryptedTitle, body?.encryptedTitleIv, {
+        allowNullToClear: true,
+      });
+      if (!result.ok) {
+        set.status = 400;
+        return { error: result.error };
+      }
+
+      const ok = await setOwnedTransferTitle(
+        me.id,
+        params.id,
+        result.value?.encryptedTitle ?? null,
+        result.value?.encryptedTitleIv ?? null,
+      );
+      if (!ok) {
+        set.status = 404;
+        return { error: "Not found" };
+      }
+
+      set.status = 204;
+      return null;
+    },
+    {
+      body: t.Object({
+        encryptedTitle: t.Union([
+          t.String({ maxLength: ENCRYPTED_TITLE_MAX_LENGTH }),
+          t.Null(),
+        ]),
+        encryptedTitleIv: t.Union([
+          t.String({ maxLength: ENCRYPTED_TITLE_IV_LENGTH }),
+          t.Null(),
+        ]),
+      }),
     },
   )
 

@@ -6,6 +6,11 @@ import { env } from '../config/env';
 import { exceedsTotalLimit } from '../utils/limits';
 import { authPlugin } from '../auth/middleware';
 import { ipContextPlugin } from '../auth/ipContextPlugin';
+import {
+  ENCRYPTED_TITLE_IV_LENGTH,
+  ENCRYPTED_TITLE_MAX_LENGTH,
+  validateEncryptedTitle,
+} from '../utils/encryptedTitle';
 
 // nanoid validation pattern (21 chars, URL-safe alphabet)
 const NANOID_PATTERN = /^[A-Za-z0-9_-]{21}$/;
@@ -56,7 +61,7 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       return { error: `Daily limit reached. You can create ${rateLimiters.dailyTransfers.maxRequests} transfers per day.` };
     }
 
-    const { expiresInHours, password, maxDownloads } = body;
+    const { expiresInHours, password, maxDownloads, encryptedTitle, encryptedTitleIv } = body;
 
     // Validate expiration
     const ALLOWED_HOURS = [1, 6, 12, 24, 72] as const;
@@ -77,7 +82,21 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       return { error: 'maxDownloads must be between 1 and 100.' };
     }
 
-    const transfer = await createTransfer(expiresInHours, password, maxDownloads, me?.id ?? null);
+    // Title is optional but both-or-neither (ADR-0005). On creation the
+    // null-clear case doesn't apply — a missing title just means "no title".
+    const titleResult = validateEncryptedTitle(encryptedTitle, encryptedTitleIv);
+    if (!titleResult.ok) {
+      set.status = 400;
+      return { error: titleResult.error };
+    }
+
+    const transfer = await createTransfer(
+      expiresInHours,
+      password,
+      maxDownloads,
+      me?.id ?? null,
+      titleResult.value,
+    );
 
     return {
       transferId: transfer.id,
@@ -87,7 +106,9 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
     body: t.Object({
       expiresInHours: t.Number(),
       password: t.Optional(t.String({ maxLength: 256 })),
-      maxDownloads: t.Optional(t.Number({ minimum: 1, maximum: 100 }))
+      maxDownloads: t.Optional(t.Number({ minimum: 1, maximum: 100 })),
+      encryptedTitle: t.Optional(t.String({ maxLength: ENCRYPTED_TITLE_MAX_LENGTH })),
+      encryptedTitleIv: t.Optional(t.String({ maxLength: ENCRYPTED_TITLE_IV_LENGTH })),
     })
   })
 

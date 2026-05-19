@@ -64,6 +64,13 @@
       "when": 1778883862459,
       "tag": "0008_vault_password_redesign",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1779053526907,
+      "tag": "0009_transfer_encrypted_title",
+      "breakpoints": true
     }
   ]
 }

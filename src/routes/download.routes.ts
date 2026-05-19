@@ -38,13 +38,19 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
     // Get all files for this transfer
     const files = await getFilesByTransferId(transfer.id);
 
-    // If password protected, return limited metadata
+    // If password protected, return limited metadata. The encrypted title
+    // is safe to return pre-verify: the ciphertext is keyed under the
+    // (still-wrapped) fragment key, so the recipient can't decrypt it
+    // until they've entered the password and the fragment-key has been
+    // unwrapped (ADR-0005).
     if (transfer.passwordHash) {
       return {
         id: transfer.id,
         expiresAt: transfer.expiresAt,
         passwordRequired: true,
-        fileCount: files.length
+        fileCount: files.length,
+        encryptedTitle: transfer.encryptedTitle,
+        encryptedTitleIv: transfer.encryptedTitleIv,
       };
     }
 
@@ -52,6 +58,8 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       id: transfer.id,
       expiresAt: transfer.expiresAt,
       passwordRequired: false,
+      encryptedTitle: transfer.encryptedTitle,
+      encryptedTitleIv: transfer.encryptedTitleIv,
       files: files.map(file => ({
         id: file.id,
         encryptedName: file.encryptedName,
@@ -116,6 +124,8 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       passwordRequired: false,
       accessToken: accessToken.token,
       accessTokenExpiresAt: accessToken.expiresAt.toISOString(),
+      encryptedTitle: transfer.encryptedTitle,
+      encryptedTitleIv: transfer.encryptedTitleIv,
       files: files.map(file => ({
         id: file.id,
         encryptedName: file.encryptedName,

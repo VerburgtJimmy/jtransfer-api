@@ -26,6 +26,13 @@ export const transfers = pgTable('transfers', {
   // wrap suffices.
   // wrappedKey wire layout: wrap_iv(12B) || ciphertext(32B) || tag(16B) = 60 bytes.
   wrappedKey: bytea('wrapped_key'),
+  // Optional human-readable title encrypted under the per-transfer fragment
+  // key (AES-GCM 256), padded to a 32-byte multiple — same scheme as the
+  // filename columns on `files`. Both columns are nullable; either both are
+  // set or both are null (invariant enforced at the application layer).
+  // See docs/adr/0005-encrypted-transfer-title-scope.md.
+  encryptedTitle: varchar('encrypted_title', { length: 1024 }),
+  encryptedTitleIv: varchar('encrypted_title_iv', { length: 32 }),
 }, (table) => ({
   userIdIdx: index('transfers_user_id_idx')
     .on(table.userId)
