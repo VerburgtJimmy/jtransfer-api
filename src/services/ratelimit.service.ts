@@ -164,6 +164,23 @@ export async function checkIpRateLimit(
   return checkRateLimit(identifier, config);
 }
 
+/**
+ * Tier-aware rate-limit check. Routes that need "per-user when authed,
+ * per-IP when anonymous" call this rather than picking the right primitive
+ * themselves. Per ADR-0006, all upload-route count/volume limiters use this
+ * policy — authenticated users see their cap unified across devices and
+ * networks; anonymous traffic falls back to the IP-keyed bucket.
+ */
+export async function checkAuthedOrIpRateLimit(
+  userId: string | null | undefined,
+  ipContext: IpContext,
+  config: RateLimitConfig
+): Promise<RateLimitResult> {
+  return userId
+    ? checkRateLimit(userId, config)
+    : checkIpRateLimit(ipContext, config);
+}
+
 async function ipRateLimitIdentifier(ipContext: IpContext): Promise<string> {
   const salt = await getActiveSalt("ratelimit");
   return ipContext.hmac(salt.secret).toString("hex");
@@ -267,6 +284,91 @@ export async function checkIpVolumeLimit(
 ): Promise<RateLimitResult> {
   const identifier = await ipRateLimitIdentifier(ipContext);
   return checkVolumeLimit(identifier, config);
+}
+
+/**
+ * Tier-aware volume counter. Per-user when a session is attached,
+ * per-IP otherwise. The matching primitive to `checkAuthedOrIpRateLimit`
+ * for byte-counters (per ADR-0006).
+ */
+export async function checkAuthedOrIpVolumeLimit(
+  userId: string | null | undefined,
+  ipContext: IpContext,
+  config: VolumeLimitConfig
+): Promise<RateLimitResult> {
+  return userId
+    ? checkVolumeLimit(userId, config)
+    : checkIpVolumeLimit(ipContext, config);
+}
+
+/**
+ * Read a rate-limit counter without incrementing — used by the usage
+ * endpoint to surface "X of Y used" without consuming a slot. Returns
+ * `{ used, resetIn }` rather than the `RateLimitResult` shape because
+ * the cap is supplied by the caller (tier-resolved), not by the
+ * limiter config.
+ */
+export async function peekRateLimit(
+  identifier: string,
+  config: RateLimitConfig
+): Promise<{ used: number; resetIn: number }> {
+  const key = `ratelimit:${config.prefix}:${identifier}`;
+  const redisClient = getRedis();
+
+  if (redisClient && redisAvailable) {
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const windowStart = now - config.windowSeconds;
+      // Prune expired entries first so the count reflects the live window.
+      await redisClient.zremrangebyscore(key, 0, windowStart);
+      const used = await redisClient.zcard(key);
+      const ttl = await redisClient.ttl(key);
+      return { used, resetIn: ttl > 0 ? ttl : config.windowSeconds };
+    } catch (err) {
+      console.warn("[RateLimit] Redis error in peek, falling back to memory:", err);
+    }
+  }
+
+  const limit = memoryLimits.get(key);
+  if (!limit || Date.now() > limit.resetAt) {
+    return { used: 0, resetIn: config.windowSeconds };
+  }
+  return {
+    used: limit.count,
+    resetIn: Math.ceil((limit.resetAt - Date.now()) / 1000),
+  };
+}
+
+/**
+ * Read a volume counter (bytes) without incrementing. Companion to
+ * `peekRateLimit` for `checkVolumeLimit`-tracked windows.
+ */
+export async function peekVolumeLimit(
+  identifier: string,
+  config: VolumeLimitConfig
+): Promise<{ usedBytes: number; resetIn: number }> {
+  const key = `volume:${config.prefix}:${identifier}`;
+  const redisClient = getRedis();
+
+  if (redisClient && redisAvailable) {
+    try {
+      const current = await redisClient.get(key);
+      const usedBytes = current ? parseInt(current, 10) : 0;
+      const ttl = await redisClient.ttl(key);
+      return { usedBytes, resetIn: ttl > 0 ? ttl : config.windowSeconds };
+    } catch (err) {
+      console.warn("[RateLimit] Redis error in volume peek, falling back to memory:", err);
+    }
+  }
+
+  const counter = memoryCounters.get(key);
+  if (!counter || Date.now() > counter.resetAt) {
+    return { usedBytes: 0, resetIn: config.windowSeconds };
+  }
+  return {
+    usedBytes: counter.value,
+    resetIn: Math.ceil((counter.resetAt - Date.now()) / 1000),
+  };
 }
 
 async function checkRedisVolumeLimit(

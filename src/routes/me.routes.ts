@@ -12,7 +12,13 @@ import { SESSION_COOKIE_NAME, SESSION_COOKIE_OPTIONS } from "../auth/sessions";
 import { normaliseEmail } from "../auth/tokens";
 import { getFileMetadataForOwnedTransfer, listTransfersForUser, setOwnedTransferTitle, softDeleteOwnedTransfer } from "../services/file.service";
 import { sendAccountDeletedNotification } from "../services/email.service";
-import { checkRateLimit, rateLimiters } from "../services/ratelimit.service";
+import {
+  checkRateLimit,
+  peekRateLimit,
+  peekVolumeLimit,
+  rateLimiters,
+} from "../services/ratelimit.service";
+import { resolveCaps } from "../config/tiers";
 import {
   ENCRYPTED_TITLE_IV_LENGTH,
   ENCRYPTED_TITLE_MAX_LENGTH,
@@ -26,6 +32,55 @@ const MAX_PAGE_SIZE = 50;
 export const meRoutes = new Elysia({ prefix: "/api/me" })
   .use(authPlugin)
   .use(ipContextPlugin)
+
+  // Current usage against the authenticated user's tier caps. Reads
+  // from the rate-limit counters without consuming a slot (peek*),
+  // and pairs the readings with caps resolved from `users.tier`
+  // (ADR-0006). Drives the /dashboard/settings/usage page and the
+  // 80%/95% in-product banners.
+  .get("/usage", async ({ me, set }) => {
+    if (!me) {
+      set.status = 401;
+      return { error: "Not authenticated" };
+    }
+
+    const caps = resolveCaps(me);
+
+    const dailyConfig = {
+      ...rateLimiters.dailyTransfers,
+      maxRequests: caps.dailyTransferCount,
+    };
+    const monthlyConfig = {
+      ...rateLimiters.monthlyUploadVolume,
+      maxBytes: caps.monthlyVolumeBytes,
+      increment: 0,
+    };
+
+    const [daily, monthly] = await Promise.all([
+      peekRateLimit(me.id, dailyConfig),
+      peekVolumeLimit(me.id, monthlyConfig),
+    ]);
+
+    const now = Date.now();
+    return {
+      tier: me.tier,
+      monthlyVolume: {
+        usedBytes: monthly.usedBytes,
+        capBytes: caps.monthlyVolumeBytes,
+        resetAt: new Date(now + monthly.resetIn * 1000).toISOString(),
+      },
+      dailyTransfers: {
+        used: daily.used,
+        cap: caps.dailyTransferCount,
+        resetAt: new Date(now + daily.resetIn * 1000).toISOString(),
+      },
+      caps: {
+        maxFileSize: caps.maxFileSize,
+        maxTransferSize: caps.maxTransferSize,
+        allowedExpiryHours: [...caps.allowedExpiryHours],
+      },
+    };
+  })
 
   .get(
     "/transfers",

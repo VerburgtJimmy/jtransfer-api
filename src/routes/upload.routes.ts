@@ -1,8 +1,12 @@
 import { Elysia, t } from 'elysia';
 import { createTransfer, completeTransfer, abortTransfer, logCompletedTransfer, createFile, getTransferTotalSize, getValidTransfer, getTransferById, getFilesByTransferId } from '../services/file.service';
 import { getPresignedUploadUrl, headObject } from '../services/r2.service';
-import { checkIpRateLimit, checkIpVolumeLimit, rateLimiters } from '../services/ratelimit.service';
-import { env } from '../config/env';
+import {
+  checkAuthedOrIpRateLimit,
+  checkAuthedOrIpVolumeLimit,
+  rateLimiters,
+} from '../services/ratelimit.service';
+import { resolveCaps } from '../config/tiers';
 import { exceedsTotalLimit } from '../utils/limits';
 import { authPlugin } from '../auth/middleware';
 import { ipContextPlugin } from '../auth/ipContextPlugin';
@@ -45,29 +49,42 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
   // (user_id NULL). Ownership is set at creation and never re-assigned.
   // See docs/audit/20-transfer-ownership.md §2.
   .post('/create-transfer', async ({ body, ipContext, me, set }) => {
-    // Per-minute rate limit
-    const rateLimit = await checkIpRateLimit(ipContext, rateLimiters.upload);
+    const caps = resolveCaps(me);
+
+    // Per-minute rate limit (NOT tier-aware — pure smoothing rate to
+    // absorb bursts, applies the same to Pro and Free). Per-user when
+    // authed, per-IP when anonymous (ADR-0006).
+    const rateLimit = await checkAuthedOrIpRateLimit(me?.id, ipContext, rateLimiters.upload);
     if (!rateLimit.allowed) {
       set.status = 429;
       set.headers['Retry-After'] = String(rateLimit.resetIn);
       return { error: 'Rate limit exceeded. Try again later.' };
     }
 
-    // Daily transfer limit
-    const dailyLimit = await checkIpRateLimit(ipContext, rateLimiters.dailyTransfers);
+    // Daily transfer limit — tier-aware cap, per-user when authed.
+    const dailyConfig = { ...rateLimiters.dailyTransfers, maxRequests: caps.dailyTransferCount };
+    const dailyLimit = await checkAuthedOrIpRateLimit(me?.id, ipContext, dailyConfig);
     if (!dailyLimit.allowed) {
       set.status = 429;
       set.headers['Retry-After'] = String(dailyLimit.resetIn);
-      return { error: `Daily limit reached. You can create ${rateLimiters.dailyTransfers.maxRequests} transfers per day.` };
+      return {
+        error: `Daily limit reached. You can create ${caps.dailyTransferCount} transfers per day.`,
+        code: 'daily_transfer_limit_exceeded',
+        upgradeUrl: '/pricing',
+      };
     }
 
     const { expiresInHours, password, maxDownloads, encryptedTitle, encryptedTitleIv } = body;
 
-    // Validate expiration
-    const ALLOWED_HOURS = [1, 6, 12, 24, 72] as const;
-    if (!ALLOWED_HOURS.includes(expiresInHours as typeof ALLOWED_HOURS[number])) {
+    // Validate expiration against the tier's allowed list. Pro adds
+    // 7d/14d/30d; Free + Anonymous stay at the historical ≤72h options.
+    if (!caps.allowedExpiryHours.includes(expiresInHours)) {
       set.status = 400;
-      return { error: 'Invalid expiration. Allowed values: 1, 6, 12, 24, 72 hours.' };
+      return {
+        error: `Invalid expiration. Allowed values: ${caps.allowedExpiryHours.join(', ')} hours.`,
+        code: 'expiry_not_allowed_for_tier',
+        upgradeUrl: '/pricing',
+      };
     }
 
     // Validate password if provided (minimum 8 characters for security)
@@ -114,7 +131,9 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
 
   // Request a presigned URL for direct upload to R2
   .post('/request-upload-url', async ({ body, ipContext, me, set }) => {
-    const rateLimit = await checkIpRateLimit(ipContext, rateLimiters.upload);
+    const caps = resolveCaps(me);
+
+    const rateLimit = await checkAuthedOrIpRateLimit(me?.id, ipContext, rateLimiters.upload);
     if (!rateLimit.allowed) {
       set.status = 429;
       set.headers['Retry-After'] = String(rateLimit.resetIn);
@@ -142,27 +161,41 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       return { error: 'Transfer not found or has expired' };
     }
 
-    // Validate file size
-    if (size > env.MAX_FILE_SIZE) {
+    // Tier-aware file size cap. Pro: 10 GiB; Free/Anonymous: 1 GiB.
+    if (size > caps.maxFileSize) {
       set.status = 400;
-      return { error: `File too large. Maximum size is ${env.MAX_FILE_SIZE / (1024 * 1024)}MB` };
+      return {
+        error: `File too large. Maximum size is ${caps.maxFileSize / (1024 * 1024)}MB`,
+        code: 'file_too_large',
+        upgradeUrl: '/pricing',
+      };
     }
 
+    // Tier-aware total-transfer cap.
     const currentTotal = await getTransferTotalSize(transferId);
-    if (exceedsTotalLimit(currentTotal, size, env.MAX_TOTAL_UPLOAD_SIZE)) {
+    if (exceedsTotalLimit(currentTotal, size, caps.maxTransferSize)) {
       set.status = 400;
-      return { error: `Transfer too large. Maximum total size is ${env.MAX_TOTAL_UPLOAD_SIZE / (1024 * 1024)}MB` };
+      return {
+        error: `Transfer too large. Maximum total size is ${caps.maxTransferSize / (1024 * 1024)}MB`,
+        code: 'transfer_too_large',
+        upgradeUrl: '/pricing',
+      };
     }
 
-    // Monthly upload volume limit per IP
-    const volumeLimit = await checkIpVolumeLimit(ipContext, {
+    // Monthly upload volume — tier-aware cap, per-user when authed.
+    const volumeLimit = await checkAuthedOrIpVolumeLimit(me?.id, ipContext, {
       ...rateLimiters.monthlyUploadVolume,
+      maxBytes: caps.monthlyVolumeBytes,
       increment: size,
     });
     if (!volumeLimit.allowed) {
       set.status = 429;
       set.headers['Retry-After'] = String(volumeLimit.resetIn);
-      return { error: 'Monthly upload limit reached. Please try again later.' };
+      return {
+        error: 'Monthly upload limit reached. Please try again later.',
+        code: 'monthly_volume_exceeded',
+        upgradeUrl: '/pricing',
+      };
     }
 
     // Create file record in database

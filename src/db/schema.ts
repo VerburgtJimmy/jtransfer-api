@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, varchar, bigint, timestamp, integer, boolean, serial, uniqueIndex, index, text, customType } from 'drizzle-orm/pg-core';
+import { pgTable, varchar, bigint, timestamp, integer, boolean, serial, uniqueIndex, index, text, jsonb, customType } from 'drizzle-orm/pg-core';
 
 // Drizzle ORM ships a `bytea` type only via the experimental column builder
 // in some versions. customType is portable and lets us round-trip Uint8Array.
@@ -86,8 +86,14 @@ export const users = pgTable('users', {
   // Set when the user finishes the mandatory vault setup flow (ADR-0004).
   // The dashboard route guard treats NULL as "redirect to /setup/vault".
   vaultSetupCompletedAt: timestamp('vault_setup_completed_at', { withTimezone: true }),
+  // Polar customer ID — stable 1:1 identifier with this user on the
+  // payment-processor side (ADR-0007). Set on first checkout; nullable
+  // for users who never reach billing. See ADR-0008 for the
+  // accompanying subscriptions table.
+  polarCustomerId: varchar('polar_customer_id', { length: 64 }),
 }, (table) => ({
   emailUnique: uniqueIndex('users_email_unique').on(table.email),
+  polarCustomerIdUnique: uniqueIndex('users_polar_customer_id_unique').on(table.polarCustomerId),
 }));
 
 export const sessions = pgTable('sessions', {
@@ -281,3 +287,69 @@ export type WebauthnChallenge = typeof webauthnChallenges.$inferSelect;
 export type NewWebauthnChallenge = typeof webauthnChallenges.$inferInsert;
 export type UserVault = typeof userVaults.$inferSelect;
 export type NewUserVault = typeof userVaults.$inferInsert;
+
+// Pro subscriptions. Separate table rather than columns on `users` per
+// ADR-0008 — keeps history across cancel + re-subscribe cycles, maps
+// 1:1 onto Polar's subscription-centric webhook model, and makes a
+// future processor swap (e.g. Mollie) surgical. `users.tier` stays as
+// the denormalised cache for hot-path "is this user Pro?" reads;
+// webhook handlers maintain it from the canonical row here.
+export const subscriptions = pgTable('subscriptions', {
+  id: varchar('id', { length: 21 }).primaryKey(), // nanoid
+  userId: varchar('user_id', { length: 21 }).notNull().references(() => users.id, { onDelete: 'cascade' }),
+  polarSubscriptionId: varchar('polar_subscription_id', { length: 64 }).notNull(),
+  // 'active' | 'past_due' | 'canceled' | 'trialing' | 'incomplete'.
+  // Pro tier reflects { active | past_due | trialing }; 'canceled' is
+  // terminal and flips users.tier to 'free'.
+  status: varchar('status', { length: 16 }).notNull(),
+  currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }).notNull(),
+  // True between the user clicking Cancel and the period actually ending.
+  // Tier stays 'pro' until current_period_end passes.
+  cancelAtPeriodEnd: boolean('cancel_at_period_end').default(false).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  // Set when the terminal `subscription.canceled` webhook arrives.
+  canceledAt: timestamp('canceled_at', { withTimezone: true }),
+}, (table) => ({
+  polarSubscriptionIdUnique: uniqueIndex('subscriptions_polar_subscription_id_unique')
+    .on(table.polarSubscriptionId),
+  userIdIdx: index('subscriptions_user_id_idx').on(table.userId),
+  // Load-bearing invariant: at most one in-flight subscription per user.
+  // Catches duplicate `subscription.created` webhook delivery at the DB
+  // layer even if the application handler dedup mis-fires.
+  oneLivePerUser: uniqueIndex('subscriptions_one_live_per_user')
+    .on(table.userId)
+    .where(sql`${table.status} IN ('active', 'past_due', 'trialing')`),
+}));
+
+// Polar webhook event audit. One row per received event, dedup'd on
+// `polarEventId` (UNIQUE) so duplicate deliveries no-op. Raw payload
+// stored for forensics — Polar retains canonical invoice records for
+// 7-year EU tax compliance, our 90-day local retention is operational
+// only (matches auth_events convention).
+export const billingEvents = pgTable('billing_events', {
+  id: varchar('id', { length: 21 }).primaryKey(), // nanoid
+  polarEventId: varchar('polar_event_id', { length: 64 }).notNull(),
+  polarEventType: varchar('polar_event_type', { length: 64 }).notNull(),
+  // FK to subscriptions.id when the event maps to a known subscription;
+  // NULL for events that arrive before we've inserted the corresponding
+  // subscription row (rare — handler upserts on receive).
+  subscriptionId: varchar('subscription_id', { length: 21 })
+    .references(() => subscriptions.id, { onDelete: 'set null' }),
+  rawPayload: jsonb('raw_payload').notNull(),
+  receivedAt: timestamp('received_at', { withTimezone: true }).defaultNow().notNull(),
+  // Set when handler completes successfully. NULL means in-flight or
+  // failed — the `error` column carries the failure message in the
+  // latter case.
+  processedAt: timestamp('processed_at', { withTimezone: true }),
+  error: text('error'),
+}, (table) => ({
+  polarEventIdUnique: uniqueIndex('billing_events_polar_event_id_unique')
+    .on(table.polarEventId),
+  subscriptionIdIdx: index('billing_events_subscription_id_idx').on(table.subscriptionId),
+}));
+
+export type Subscription = typeof subscriptions.$inferSelect;
+export type NewSubscription = typeof subscriptions.$inferInsert;
+export type BillingEvent = typeof billingEvents.$inferSelect;
+export type NewBillingEvent = typeof billingEvents.$inferInsert;

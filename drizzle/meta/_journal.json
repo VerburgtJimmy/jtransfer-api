@@ -78,6 +78,13 @@
       "when": 1779225260135,
       "tag": "0010_session_asn_org",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1779231109787,
+      "tag": "0011_pro_tier_foundation",
+      "breakpoints": true
     }
   ]
 }
