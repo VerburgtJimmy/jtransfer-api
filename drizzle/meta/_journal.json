@@ -71,6 +71,13 @@
       "when": 1779053526907,
       "tag": "0009_transfer_encrypted_title",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1779225260135,
+      "tag": "0010_session_asn_org",
+      "breakpoints": true
     }
   ]
 }

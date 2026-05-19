@@ -1,21 +1,24 @@
-// Session-anomaly detection. Audit doc 19 §2.2 + D-082.
+// Session-anomaly detection + notification.
 //
 // On every authenticated request we recompute the request's ip_hmac under
 // the session's per-session correlation_secret and compare to the value
 // stored at session-create time. If both the ip_hmac and one of country
-// or ASN have changed, we log a `session_anomaly` auth event.
+// or ASN have changed, we log a `session_anomaly` auth event and — when
+// `ENABLE_SESSION_ANOMALY_EMAIL` is on — send the account a heads-up
+// email so the user can self-revoke from /dashboard/settings.
 //
-// Deliberately log-only: no auto-revoke (too noisy per the spec), no
-// email (Phase B's /security UI is the place users will review these).
+// No auto-revoke: too noisy for legitimate travel / network switching.
 //
 // In-process dedup: a single session that bounces between two networks
-// would otherwise spam the audit log on every request. We remember the
-// most recently logged anomaly per session for a short TTL.
+// would otherwise spam both the audit log and the user's inbox. We
+// remember the most recently logged anomaly per session for a short TTL.
+// The same dedup key gates the email send.
 
 import { timingSafeEqual } from "node:crypto";
 import { env } from "../config/env";
 import type { Session } from "../db/schema";
 import { logAuthEvent } from "./events";
+import { sendSessionAnomalyNotification } from "../services/email.service";
 import type { IpContext } from "../utils/ipContext";
 
 const DEDUP_TTL_MS = 60 * 60 * 1000; // 1 hour — bounds duplicate writes.
@@ -93,6 +96,26 @@ export async function detectAndReportSessionAnomaly(input: DetectInput): Promise
     ipContext,
     userAgent: input.userAgent,
   });
+
+  if (!env.ENABLE_SESSION_ANOMALY_EMAIL) return;
+  try {
+    await sendSessionAnomalyNotification({
+      to: input.email,
+      previousCountry: storedCountry,
+      previousAsnOrg: session.asnOrg,
+      previousAsn: storedAsn,
+      currentCountry: currentCountry,
+      currentAsnOrg: ipContext.asnOrg,
+      currentAsn: currentAsn,
+      sessionUserAgent: session.userAgent,
+      sessionCreatedAt: session.createdAt,
+      settingsUrl: `${env.APP_URL.replace(/\/$/, "")}/dashboard/settings`,
+    });
+  } catch (err) {
+    // Fire-and-forget: a TEM failure must never break the request path.
+    // The audit-log row is already written above, so the signal isn't lost.
+    console.error("[session-anomaly] email send failed:", err);
+  }
 }
 
 export function __resetSessionAnomalyDedupForTests(): void {

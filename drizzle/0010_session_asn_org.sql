@@ -1,0 +1,1 @@
+ALTER TABLE "sessions" ADD COLUMN "asn_org" varchar(255);

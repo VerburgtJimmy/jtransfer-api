@@ -118,11 +118,15 @@ export const env = {
   MAXMIND_LICENSE_KEY: process.env.MAXMIND_LICENSE_KEY ?? "",
   GEOIP_DIR: getEnv("GEOIP_DIR", "/var/lib/geoip"),
   ENABLE_IP_DERIVATION: (process.env.ENABLE_IP_DERIVATION ?? "true") === "true",
-  // Session-anomaly detection (audit doc 19 §2.2). Log-only — no email, no
-  // auto-revoke. Surfaced as the off-switch for the same-session ip_hmac
+  // Session-anomaly detection. Off-switch for the same-session ip_hmac
   // comparison in case it ever produces noise we want to silence quickly.
   ENABLE_SESSION_ANOMALY_DETECTION:
     (process.env.ENABLE_SESSION_ANOMALY_DETECTION ?? "true") === "true",
+  // Session-anomaly email notification. Default off — the operator flips
+  // it on after observing the in-prod false-positive rate. The audit-log
+  // row is written either way; this flag only gates the outbound email.
+  ENABLE_SESSION_ANOMALY_EMAIL:
+    (process.env.ENABLE_SESSION_ANOMALY_EMAIL ?? "false") === "true",
 
   NODE_ENV,
   IS_PRODUCTION,

@@ -71,6 +71,7 @@ export async function createSession(input: CreateSessionInput): Promise<CreateSe
       lastSeenAt: now,
       country: normaliseCountry(input.ipContext.country),
       asn: input.ipContext.asn,
+      asnOrg: input.ipContext.asnOrg,
       ipHmac,
       correlationSecret,
       userAgent: input.userAgent,

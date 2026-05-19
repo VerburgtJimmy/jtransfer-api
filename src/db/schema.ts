@@ -110,6 +110,11 @@ export const sessions = pgTable('sessions', {
   // permanently un-correlatable to any IP.
   country: varchar('country', { length: 2 }),
   asn: integer('asn'),
+  // ASN organisation label captured at session-create (e.g. "Proximus").
+  // Stored so the session-anomaly notification email can render a human
+  // name without needing MaxMind at send time. No extra privacy cost vs
+  // the integer above — the integer already identifies the org.
+  asnOrg: varchar('asn_org', { length: 255 }),
   ipHmac: bytea('ip_hmac'),
   correlationSecret: bytea('correlation_secret'),
   userAgent: text('user_agent'),

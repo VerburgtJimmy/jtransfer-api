@@ -43,6 +43,10 @@ process.env.R2_BUCKET_NAME = process.env.R2_BUCKET_NAME ?? "test";
 // even when the operator's .env carries live credentials.
 process.env.SCW_TEM_PROJECT_ID = "";
 process.env.SCW_TEM_SECRET_KEY = "";
+// Enable the session-anomaly email path so the send branch is exercised in
+// tests. Cases that care about the call mock `email.service` to spy on it;
+// cases that don't never trigger detection at all.
+process.env.ENABLE_SESSION_ANOMALY_EMAIL = "true";
 
 // Default mock: presigned-URL handouts succeed, deletes are no-ops, and
 // HeadObject pretends the upload landed at the size we have on the file
