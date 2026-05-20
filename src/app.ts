@@ -6,6 +6,7 @@ import { Elysia } from "elysia";
 import { env } from "./config/env";
 import { ipContextPlugin } from "./auth/ipContextPlugin";
 import { authRoutes } from "./routes/auth.routes";
+import { billingRoutes } from "./routes/billing.routes";
 import { downloadRoutes } from "./routes/download.routes";
 import { meRoutes } from "./routes/me.routes";
 import { passkeyRoutes } from "./routes/passkey.routes";
@@ -35,6 +36,7 @@ export function createApp() {
     .get("/health", () => ({ status: "ok", timestamp: new Date().toISOString() }))
     .use(authRoutes)
     .use(passkeyRoutes)
+    .use(billingRoutes)
     .use(uploadRoutes)
     .use(downloadRoutes)
     .use(meRoutes)

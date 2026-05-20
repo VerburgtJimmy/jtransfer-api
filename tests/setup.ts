@@ -47,6 +47,16 @@ process.env.SCW_TEM_SECRET_KEY = "";
 // tests. Cases that care about the call mock `email.service` to spy on it;
 // cases that don't never trigger detection at all.
 process.env.ENABLE_SESSION_ANOMALY_EMAIL = "true";
+// Polar webhook signature verification needs a non-empty secret. Tests
+// that exercise the webhook path use this exact value to sign their
+// crafted payloads (see tests/integration/billing-webhook.test.ts).
+process.env.POLAR_WEBHOOK_SECRET = "whsec_dGVzdHdlYmhvb2tzZWNyZXQ";
+// Test fixtures for the checkout endpoint. The Polar API is mocked in
+// tests that exercise checkout/portal — these env values just need to be
+// non-empty so polar.service's lazy client init doesn't throw on import.
+process.env.POLAR_ACCESS_TOKEN = process.env.POLAR_ACCESS_TOKEN ?? "polar_test_token";
+process.env.POLAR_PRODUCT_ID_MONTHLY = process.env.POLAR_PRODUCT_ID_MONTHLY ?? "prod_test_monthly";
+process.env.POLAR_PRODUCT_ID_ANNUAL = process.env.POLAR_PRODUCT_ID_ANNUAL ?? "prod_test_annual";
 
 // Default mock: presigned-URL handouts succeed, deletes are no-ops, and
 // HeadObject pretends the upload landed at the size we have on the file

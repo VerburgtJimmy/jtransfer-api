@@ -128,6 +128,22 @@ export const env = {
   ENABLE_SESSION_ANOMALY_EMAIL:
     (process.env.ENABLE_SESSION_ANOMALY_EMAIL ?? "false") === "true",
 
+  // Polar — payment processor + Merchant of Record for Pro subscriptions
+  // (ADR-0007). Sandbox is used in dev and CI; production carries real
+  // money. Access token authenticates server-side API calls (creating
+  // checkouts, opening portal sessions). Webhook secret verifies the
+  // signature on inbound events. Product IDs map to the locked pricing
+  // (€5/mo, €50/yr — ADR-0006) and are configured in the Polar dashboard
+  // once and pasted here. The success URL is where the Polar-hosted
+  // checkout redirects after a completed purchase; the user lands back
+  // on the dashboard with a fresh tier the moment the webhook lands.
+  POLAR_SERVER: (process.env.POLAR_SERVER ?? "sandbox") as "sandbox" | "production",
+  POLAR_ACCESS_TOKEN: process.env.POLAR_ACCESS_TOKEN ?? "",
+  POLAR_WEBHOOK_SECRET: process.env.POLAR_WEBHOOK_SECRET ?? "",
+  POLAR_PRODUCT_ID_MONTHLY: process.env.POLAR_PRODUCT_ID_MONTHLY ?? "",
+  POLAR_PRODUCT_ID_ANNUAL: process.env.POLAR_PRODUCT_ID_ANNUAL ?? "",
+  POLAR_SUCCESS_URL: process.env.POLAR_SUCCESS_URL ?? "",
+
   NODE_ENV,
   IS_PRODUCTION,
 };
