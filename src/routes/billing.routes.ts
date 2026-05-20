@@ -225,24 +225,35 @@ export const billingRoutes = new Elysia({ prefix: "/api/billing" })
   })
 
   // Public webhook receiver. No auth — security is the HMAC signature
-  // verified inside `parseWebhook`. The body is read as raw text via
-  // `request.text()` rather than through Elysia's body schema, so the
-  // exact bytes Polar signed reach the verifier unaltered (Elysia's
-  // content-type-sniffing JSON parser would otherwise re-serialise and
-  // break the signature).
-  .post("/webhook", async ({ request, set }) => {
-      const body = await request.text();
+  // verified inside `parseWebhook`. `parse: 'text'` forces Elysia to
+  // give us the body as a raw string regardless of Polar's
+  // Content-Type header, so the exact bytes Polar signed reach the
+  // verifier unaltered (the default JSON parser would re-serialise
+  // and break the signature).
+  .post("/webhook", async ({ body, request, set }) => {
+      const rawBody = typeof body === "string" ? body : "";
 
       // Collect headers as a plain record — `parseWebhook` is case-
-      // insensitive per the standard-webhooks spec.
+      // insensitive per the standard-webhooks spec. Fetch normalises
+      // header names to lowercase.
       const headers: Record<string, string> = {};
       request.headers.forEach((value, key) => {
         headers[key] = value;
       });
 
+      // Standard-webhooks puts the canonical event ID in the
+      // `webhook-id` header. Check presence BEFORE signature
+      // verification so a missing header returns a clear 400 rather
+      // than the verifier's generic "missing required headers" 401.
+      const polarEventId = headers["webhook-id"] ?? "";
+      if (!polarEventId) {
+        set.status = 400;
+        return { error: "Missing webhook-id header" };
+      }
+
       let event: ReturnType<typeof parseWebhook>;
       try {
-        event = parseWebhook(body, headers);
+        event = parseWebhook(rawBody, headers);
       } catch (err) {
         if (err instanceof WebhookVerificationError) {
           set.status = 401;
@@ -251,18 +262,6 @@ export const billingRoutes = new Elysia({ prefix: "/api/billing" })
         console.error("[billing] webhook parse error:", err);
         set.status = 400;
         return { error: "Malformed webhook payload" };
-      }
-
-      // Standard-webhooks puts the canonical event ID in the
-      // `webhook-id` header. We persist it as `polar_event_id` and rely
-      // on the UNIQUE index as the dedup boundary — a retried delivery
-      // collides on insert and we short-circuit to 200 so Polar stops
-      // retrying.
-      const polarEventId = headers["webhook-id"] ?? headers["Webhook-Id"] ?? "";
-      if (!polarEventId) {
-        console.warn("[billing] webhook missing webhook-id header; cannot dedup");
-        set.status = 400;
-        return { error: "Missing webhook-id header" };
       }
 
       const eventRowId = nanoid();
@@ -323,4 +322,12 @@ export const billingRoutes = new Elysia({ prefix: "/api/billing" })
         .where(eq(billingEvents.id, eventRowId));
 
       return { ok: result.ok };
-    });
+    },
+    {
+      // Force Elysia to give us the body as a raw string regardless
+      // of Content-Type. Polar sends `application/json`; the default
+      // parser would re-serialise the parsed object before we ever
+      // see the bytes, and the re-serialisation breaks the HMAC.
+      parse: "text",
+    },
+  );
