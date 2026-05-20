@@ -15,7 +15,7 @@
 //     Audit-logged in `billing_events`.
 
 import { Elysia, t } from "elysia";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { authPlugin } from "../auth/middleware";
 import { db } from "../db";
@@ -225,13 +225,14 @@ export const billingRoutes = new Elysia({ prefix: "/api/billing" })
   })
 
   // Public webhook receiver. No auth — security is the HMAC signature
-  // verified inside `parseWebhook`. The route is parsed as text so the
-  // raw body bytes (which Polar signed) reach the verifier unaltered;
-  // Elysia's default JSON parsing would re-serialise and break the
-  // signature.
-  .post(
-    "/webhook",
-    async ({ body, request, set }) => {
+  // verified inside `parseWebhook`. The body is read as raw text via
+  // `request.text()` rather than through Elysia's body schema, so the
+  // exact bytes Polar signed reach the verifier unaltered (Elysia's
+  // content-type-sniffing JSON parser would otherwise re-serialise and
+  // break the signature).
+  .post("/webhook", async ({ request, set }) => {
+      const body = await request.text();
+
       // Collect headers as a plain record — `parseWebhook` is case-
       // insensitive per the standard-webhooks spec.
       const headers: Record<string, string> = {};
@@ -322,11 +323,4 @@ export const billingRoutes = new Elysia({ prefix: "/api/billing" })
         .where(eq(billingEvents.id, eventRowId));
 
       return { ok: result.ok };
-    },
-    {
-      // Receive the raw body as a string so signature verification
-      // sees byte-identical input to what Polar signed. JSON-parsing
-      // by Elysia would re-serialise and break the signature.
-      body: t.String(),
-    },
-  );
+    });
