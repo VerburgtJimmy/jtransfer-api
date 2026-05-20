@@ -12,11 +12,14 @@ pre-commit:
     block-env-files:
       # Refuse commits that include a .env file. Secrets belong in
       # /etc/jtransfer/ on the VPS, never in git (see docs/runbooks/secrets.md).
+      # `.env.example` is the documented template and is whitelisted —
+      # it carries placeholder values, never real secrets.
       run: |
         files="{staged_files}"
-        if printf '%s\n' "$files" | grep -E '(^|/)\.env(\.|$)' >/dev/null; then
+        blocked=$(printf '%s\n' "$files" | grep -E '(^|/)\.env(\.|$)' | grep -vE '(^|/)\.env\.example$' || true)
+        if [ -n "$blocked" ]; then
           echo "✖ refusing commit: .env file is staged"
-          printf '%s\n' "$files" | grep -E '(^|/)\.env(\.|$)'
+          printf '%s\n' "$blocked"
           echo "  unstage with: git restore --staged <file>"
           exit 1
         fi
