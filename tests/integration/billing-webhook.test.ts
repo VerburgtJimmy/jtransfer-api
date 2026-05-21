@@ -15,7 +15,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { eq } from "drizzle-orm";
-import { Webhook } from "standardwebhooks";
+import { Webhook, WebhookVerificationError } from "standardwebhooks";
 import { createApp } from "../../src/app";
 import { db } from "../../src/db";
 import { billingEvents, subscriptions, users } from "../../src/db/schema";
@@ -24,6 +24,31 @@ import { ensureMigrations, resetDb } from "../helpers/db";
 
 const APP_URL = process.env.APP_URL!;
 const WEBHOOK_SECRET = process.env.POLAR_WEBHOOK_SECRET!;
+
+// Replace `parseWebhook` with a version that does real signature
+// verification (so the security check is still tested end-to-end)
+// but skips Polar's strict Zod parsing of every Subscription field.
+// We're testing OUR handler logic — routing, idempotency, tier sync —
+// not Polar's wire-format schema. The auth-gate tests for checkout
+// and portal don't call the stubbed Polar functions so they keep
+// working under this mock.
+mock.module("../../src/services/polar.service", () => ({
+  parseWebhook: (body: string, headers: Record<string, string>) => {
+    const webhook = new Webhook(WEBHOOK_SECRET);
+    webhook.verify(body, headers); // throws WebhookVerificationError on bad sig
+    return JSON.parse(body);
+  },
+  WebhookVerificationError,
+  createProCheckout: async () => {
+    throw new Error("createProCheckout not exercised in webhook tests");
+  },
+  createPortalSession: async () => {
+    throw new Error("createPortalSession not exercised in webhook tests");
+  },
+  cancelSubscriptionImmediately: async () => {
+    throw new Error("cancelSubscriptionImmediately not exercised in webhook tests");
+  },
+}));
 
 let app: ReturnType<typeof createApp>;
 
@@ -64,6 +89,10 @@ function signEvent(payload: object, msgId = `msg_${Math.random().toString(36).sl
   };
 }
 
+// Test fixtures use camelCase because the mocked `parseWebhook`
+// skips the SDK's snake_case→camelCase normalisation. The handler
+// accesses fields by camelCase (matching its `PolarSubscriptionData`
+// interface), so the mock returns what the handler expects to see.
 function subscriptionCreatedPayload(opts: {
   subscriptionId: string;
   customerId: string;
@@ -78,45 +107,17 @@ function subscriptionCreatedPayload(opts: {
     data: {
       id: opts.subscriptionId,
       status: opts.status ?? "active",
-      current_period_start: new Date().toISOString(),
-      current_period_end: (opts.currentPeriodEnd ?? new Date(Date.now() + 30 * 24 * 3600 * 1000)).toISOString(),
-      cancel_at_period_end: opts.cancelAtPeriodEnd ?? false,
-      canceled_at: null,
-      started_at: new Date().toISOString(),
-      ended_at: null,
-      customer_id: opts.customerId,
-      product_id: "prod_test",
-      discount_id: null,
-      checkout_id: null,
-      amount: 500,
-      currency: "EUR",
-      recurring_interval: "month",
-      created_at: new Date().toISOString(),
-      modified_at: null,
-      metadata: {},
-      custom_field_data: {},
+      currentPeriodEnd: (
+        opts.currentPeriodEnd ?? new Date(Date.now() + 30 * 24 * 3600 * 1000)
+      ).toISOString(),
+      cancelAtPeriodEnd: opts.cancelAtPeriodEnd ?? false,
+      canceledAt: null,
+      customerId: opts.customerId,
       customer: {
         id: opts.customerId,
-        created_at: new Date().toISOString(),
-        modified_at: null,
-        metadata: {},
-        external_id: opts.externalId,
+        externalId: opts.externalId,
         email: "buyer@example.test",
-        email_verified: true,
-        name: null,
-        billing_address: null,
-        tax_id: null,
-        organization_id: "org_test",
-        deleted_at: null,
-        avatar_url: null,
       },
-      user_id: opts.externalId,
-      user: { id: opts.externalId, email: "buyer@example.test", public_name: "Buyer" },
-      product: { id: "prod_test", name: "Pro" },
-      price: { id: "price_test", amount_type: "fixed", price_amount: 500, price_currency: "EUR" },
-      prices: [],
-      meters: [],
-      discount: null,
     },
   };
 }
@@ -133,8 +134,7 @@ function subscriptionCanceledPayload(opts: {
     data: {
       ...created.data,
       status: "canceled",
-      canceled_at: new Date().toISOString(),
-      ended_at: new Date().toISOString(),
+      canceledAt: new Date().toISOString(),
     },
   };
 }
