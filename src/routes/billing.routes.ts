@@ -15,7 +15,7 @@
 //     Audit-logged in `billing_events`.
 
 import { Elysia, t } from "elysia";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { authPlugin } from "../auth/middleware";
 import { db } from "../db";
@@ -180,6 +180,41 @@ async function applyTerminalCancel(data: PolarSubscriptionData): Promise<Handler
 
 export const billingRoutes = new Elysia({ prefix: "/api/billing" })
   .use(authPlugin)
+
+  // Subscription summary for the authenticated user — drives the
+  // Subscription card on /dashboard/settings/account and gates the
+  // dashboard tier badge. Returns the live-or-most-recently-canceled
+  // subscription so the UI can render "Pro until {date}" after a
+  // cancel-scheduled state. `subscription` is null only for users
+  // who have never had a Subscription row (clean Free).
+  .get("/status", async ({ me, set }) => {
+    if (!me) {
+      set.status = 401;
+      return { error: "Not authenticated" };
+    }
+
+    // Prefer the live row when present; otherwise fall back to the
+    // most recent one so we can still surface "ended on {date}" for
+    // a user whose subscription closed terminally.
+    const [live] = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.userId, me.id))
+      .orderBy(desc(subscriptions.updatedAt))
+      .limit(1);
+
+    return {
+      tier: me.tier,
+      subscription: live
+        ? {
+            status: live.status,
+            currentPeriodEnd: live.currentPeriodEnd.toISOString(),
+            cancelAtPeriodEnd: live.cancelAtPeriodEnd,
+            canceledAt: live.canceledAt ? live.canceledAt.toISOString() : null,
+          }
+        : null,
+    };
+  })
 
   .post(
     "/checkout",
