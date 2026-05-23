@@ -75,7 +75,7 @@ describe("POST /api/upload/init-multipart", () => {
 
   it("file just over one Part: returns two Parts with correct sizes", async () => {
     const transfer = await createTransfer(1);
-    const size = 8 * 1024 * 1024 + 100; // 8 MB + 100 B
+    const size = 16 * 1024 * 1024 + 100; // 16 MB + 100 B
     const res = await app.handle(
       new Request(`${APP_URL}/api/upload/init-multipart`, jsonBody({
         transferId: transfer.id,
@@ -88,7 +88,7 @@ describe("POST /api/upload/init-multipart", () => {
       partUrls: Array<{ partNumber: number; contentLength: number }>;
     };
     expect(body.partUrls).toHaveLength(2);
-    expect(body.partUrls[0]!.contentLength).toBe(8 * 1024 * 1024);
+    expect(body.partUrls[0]!.contentLength).toBe(16 * 1024 * 1024);
     expect(body.partUrls[1]!.contentLength).toBe(100);
   });
 

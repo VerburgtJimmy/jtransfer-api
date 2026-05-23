@@ -97,7 +97,12 @@ export async function deleteFromR2(key: string): Promise<void> {
 // Each Part is signed with its own presigned URL so the browser uploads
 // directly to R2; the server never proxies the bytes.
 
-export const MULTIPART_PART_SIZE = 8 * 1024 * 1024; // 8 MB per Part (ADR-0009)
+// Part size: 16 MB. Bumped from the V1 value of 8 MB after the speed
+// audit — larger Parts amortise TCP slow-start better on fast
+// connections (~5-15% throughput win above 20 MB/s) without
+// meaningfully hurting slow ones. Retry cost rises proportionally
+// (3.2 s vs 1.6 s at 5 MB/s) but stays comfortable. See ADR-0009.
+export const MULTIPART_PART_SIZE = 16 * 1024 * 1024;
 
 export interface PresignedPartUrl {
   partNumber: number;
