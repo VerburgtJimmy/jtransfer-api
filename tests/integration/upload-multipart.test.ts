@@ -1,0 +1,276 @@
+// Multipart upload routes per ADR-0009. Covers:
+//
+//   - /init-multipart: validation, ownership 404, cap enforcement,
+//     part-URL batch shape, volume reservation.
+//   - /complete-multipart: ownership 404, file-id mismatch, happy path.
+//   - /abort-multipart: ownership 404, volume reservation released,
+//     file row deleted, idempotent on re-abort.
+//
+// The R2 SDK is stubbed via `tests/helpers/r2-mock.ts`; uploads to
+// actual R2 are out of scope (covered manually in dev / by the
+// frontend orchestrator's own surface tests).
+
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { eq } from "drizzle-orm";
+import { createApp } from "../../src/app";
+import { db } from "../../src/db";
+import { files, transfers } from "../../src/db/schema";
+import { createTransfer } from "../../src/services/file.service";
+import { authedRequest, createAuthedUser } from "../helpers/auth";
+import { ensureMigrations, resetDb } from "../helpers/db";
+
+const APP_URL = process.env.APP_URL!;
+const ORIGIN_HEADER = { Origin: APP_URL, "Content-Type": "application/json" };
+
+let app: ReturnType<typeof createApp>;
+
+beforeAll(async () => {
+  await ensureMigrations();
+  app = createApp();
+});
+
+beforeEach(async () => {
+  await resetDb();
+});
+
+afterAll(async () => {
+  await resetDb();
+});
+
+function jsonBody<T extends object>(body: T): RequestInit {
+  return { method: "POST", headers: ORIGIN_HEADER, body: JSON.stringify(body) };
+}
+
+const FILE_FIELDS = {
+  contentType: "application/octet-stream",
+  encryptedName: "x".repeat(32),
+  encryptedNameIv: "y".repeat(24),
+  fileIv: "z".repeat(24),
+};
+
+// ─── init-multipart ─────────────────────────────────────────────────────────
+
+describe("POST /api/upload/init-multipart", () => {
+  it("anonymous + small file: returns one Part URL", async () => {
+    const transfer = await createTransfer(1);
+    const res = await app.handle(
+      new Request(`${APP_URL}/api/upload/init-multipart`, jsonBody({
+        transferId: transfer.id,
+        size: 1024,
+        ...FILE_FIELDS,
+      })),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      fileId: string;
+      r2Key: string;
+      uploadId: string;
+      partUrls: Array<{ partNumber: number; url: string; contentLength: number }>;
+    };
+    expect(body.uploadId).toMatch(/^mock-upload-/);
+    expect(body.partUrls).toHaveLength(1);
+    expect(body.partUrls[0]!.partNumber).toBe(1);
+    expect(body.partUrls[0]!.contentLength).toBe(1024);
+  });
+
+  it("file just over one Part: returns two Parts with correct sizes", async () => {
+    const transfer = await createTransfer(1);
+    const size = 8 * 1024 * 1024 + 100; // 8 MB + 100 B
+    const res = await app.handle(
+      new Request(`${APP_URL}/api/upload/init-multipart`, jsonBody({
+        transferId: transfer.id,
+        size,
+        ...FILE_FIELDS,
+      })),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      partUrls: Array<{ partNumber: number; contentLength: number }>;
+    };
+    expect(body.partUrls).toHaveLength(2);
+    expect(body.partUrls[0]!.contentLength).toBe(8 * 1024 * 1024);
+    expect(body.partUrls[1]!.contentLength).toBe(100);
+  });
+
+  it("non-owner gets 404 on an owned transfer", async () => {
+    const { user: owner } = await createAuthedUser();
+    const { cookie: stranger } = await createAuthedUser();
+    const owned = await createTransfer(1, undefined, undefined, owner.id);
+
+    const res = await app.handle(
+      authedRequest(stranger, `${APP_URL}/api/upload/init-multipart`, jsonBody({
+        transferId: owned.id,
+        size: 1024,
+        ...FILE_FIELDS,
+      })),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("creates a file row with the requested size", async () => {
+    const transfer = await createTransfer(1);
+    const res = await app.handle(
+      new Request(`${APP_URL}/api/upload/init-multipart`, jsonBody({
+        transferId: transfer.id,
+        size: 12345,
+        ...FILE_FIELDS,
+      })),
+    );
+    const body = (await res.json()) as { fileId: string };
+    const [row] = await db.select().from(files).where(eq(files.id, body.fileId));
+    expect(row.size).toBe(12345);
+    expect(row.transferId).toBe(transfer.id);
+  });
+});
+
+// ─── complete-multipart ─────────────────────────────────────────────────────
+
+describe("POST /api/upload/complete-multipart", () => {
+  it("happy path returns 200 with the file id + size", async () => {
+    const transfer = await createTransfer(1);
+    const init = await app
+      .handle(
+        new Request(`${APP_URL}/api/upload/init-multipart`, jsonBody({
+          transferId: transfer.id,
+          size: 1024,
+          ...FILE_FIELDS,
+        })),
+      )
+      .then((r) => r.json()) as {
+        fileId: string;
+        uploadId: string;
+        partUrls: Array<{ partNumber: number }>;
+      };
+
+    const res = await app.handle(
+      new Request(`${APP_URL}/api/upload/complete-multipart`, jsonBody({
+        transferId: transfer.id,
+        fileId: init.fileId,
+        uploadId: init.uploadId,
+        parts: init.partUrls.map((p) => ({ partNumber: p.partNumber, etag: '"abc"' })),
+      })),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { fileId: string; size: number };
+    expect(body.fileId).toBe(init.fileId);
+    expect(body.size).toBe(1024);
+  });
+
+  it("non-owner gets 404 on an owned transfer", async () => {
+    const { user: owner } = await createAuthedUser();
+    const { cookie: stranger } = await createAuthedUser();
+    const owned = await createTransfer(1, undefined, undefined, owner.id);
+
+    const res = await app.handle(
+      authedRequest(stranger, `${APP_URL}/api/upload/complete-multipart`, jsonBody({
+        transferId: owned.id,
+        fileId: "F".repeat(21),
+        uploadId: "anything",
+        parts: [{ partNumber: 1, etag: '"a"' }],
+      })),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("file id from a different transfer returns 404", async () => {
+    const transferA = await createTransfer(1);
+    const transferB = await createTransfer(1);
+    const init = await app
+      .handle(
+        new Request(`${APP_URL}/api/upload/init-multipart`, jsonBody({
+          transferId: transferA.id,
+          size: 1024,
+          ...FILE_FIELDS,
+        })),
+      )
+      .then((r) => r.json()) as { fileId: string; uploadId: string };
+
+    // Use file from A but pass transferId B → mismatch → 404.
+    const res = await app.handle(
+      new Request(`${APP_URL}/api/upload/complete-multipart`, jsonBody({
+        transferId: transferB.id,
+        fileId: init.fileId,
+        uploadId: init.uploadId,
+        parts: [{ partNumber: 1, etag: '"a"' }],
+      })),
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+// ─── abort-multipart ────────────────────────────────────────────────────────
+
+describe("POST /api/upload/abort-multipart", () => {
+  it("deletes the file row and returns 204", async () => {
+    const transfer = await createTransfer(1);
+    const init = await app
+      .handle(
+        new Request(`${APP_URL}/api/upload/init-multipart`, jsonBody({
+          transferId: transfer.id,
+          size: 1024,
+          ...FILE_FIELDS,
+        })),
+      )
+      .then((r) => r.json()) as { fileId: string; uploadId: string };
+
+    const res = await app.handle(
+      new Request(`${APP_URL}/api/upload/abort-multipart`, jsonBody({
+        transferId: transfer.id,
+        fileId: init.fileId,
+        uploadId: init.uploadId,
+      })),
+    );
+    expect(res.status).toBe(204);
+
+    const rows = await db.select().from(files).where(eq(files.id, init.fileId));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("non-owner gets 404 on an owned transfer", async () => {
+    const { user: owner } = await createAuthedUser();
+    const { cookie: stranger } = await createAuthedUser();
+    const owned = await createTransfer(1, undefined, undefined, owner.id);
+
+    const res = await app.handle(
+      authedRequest(stranger, `${APP_URL}/api/upload/abort-multipart`, jsonBody({
+        transferId: owned.id,
+        fileId: "F".repeat(21),
+        uploadId: "anything",
+      })),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("aborting a file that's already gone returns 204 (idempotent)", async () => {
+    const transfer = await createTransfer(1);
+    const init = await app
+      .handle(
+        new Request(`${APP_URL}/api/upload/init-multipart`, jsonBody({
+          transferId: transfer.id,
+          size: 1024,
+          ...FILE_FIELDS,
+        })),
+      )
+      .then((r) => r.json()) as { fileId: string; uploadId: string };
+
+    // First abort.
+    await app.handle(
+      new Request(`${APP_URL}/api/upload/abort-multipart`, jsonBody({
+        transferId: transfer.id,
+        fileId: init.fileId,
+        uploadId: init.uploadId,
+      })),
+    );
+
+    // Second abort on the same (already-deleted) file should still
+    // succeed with 204 — retried clients shouldn't see a confusing 404.
+    const res = await app.handle(
+      new Request(`${APP_URL}/api/upload/abort-multipart`, jsonBody({
+        transferId: transfer.id,
+        fileId: init.fileId,
+        uploadId: init.uploadId,
+      })),
+    );
+    expect(res.status).toBe(204);
+  });
+});

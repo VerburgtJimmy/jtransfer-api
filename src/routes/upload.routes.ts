@@ -1,10 +1,16 @@
 import { Elysia, t } from 'elysia';
-import { createTransfer, completeTransfer, abortTransfer, logCompletedTransfer, createFile, getTransferTotalSize, getValidTransfer, getTransferById, getFilesByTransferId } from '../services/file.service';
-import { getPresignedUploadUrl, headObject } from '../services/r2.service';
+import { createTransfer, completeTransfer, abortTransfer, logCompletedTransfer, createFile, deleteFileById, getFileById, getTransferTotalSize, getValidTransfer, getTransferById, getFilesByTransferId } from '../services/file.service';
+import {
+  abortMultipartUpload,
+  completeMultipartUpload,
+  headObject,
+  initMultipartUpload,
+} from '../services/r2.service';
 import {
   checkAuthedOrIpRateLimit,
   checkAuthedOrIpVolumeLimit,
   rateLimiters,
+  releaseAuthedOrIpVolumeLimit,
 } from '../services/ratelimit.service';
 import { resolveCaps } from '../config/tiers';
 import { exceedsTotalLimit } from '../utils/limits';
@@ -129,8 +135,12 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
     })
   })
 
-  // Request a presigned URL for direct upload to R2
-  .post('/request-upload-url', async ({ body, ipContext, me, set }) => {
+  // Begin a multipart upload for one file. Replaces the old
+  // /request-upload-url endpoint per ADR-0009. Returns all Part URLs
+  // in one batch so the browser can upload Parts in parallel without
+  // per-Part round-trips back to us. Charges the monthly volume up
+  // front; /abort-multipart releases it.
+  .post('/init-multipart', async ({ body, ipContext, me, set }) => {
     const caps = resolveCaps(me);
 
     const rateLimit = await checkAuthedOrIpRateLimit(me?.id, ipContext, rateLimiters.upload);
@@ -142,7 +152,6 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
 
     const { transferId, contentType, encryptedName, encryptedNameIv, fileIv, size } = body;
 
-    // Validate transferId format to prevent path traversal
     if (!isValidNanoId(transferId)) {
       set.status = 400;
       return { error: 'Invalid transfer ID' };
@@ -154,14 +163,14 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       return { error: 'Transfer not found or has expired' };
     }
 
-    // Owner-only on owned transfers; non-owner returns 404 (not 403) to
-    // avoid leaking existence. See docs/audit/20-transfer-ownership.md §4.
+    // Owner-only on owned transfers; non-owner collapses to 404 to
+    // avoid leaking existence (audit doc 20 §4).
     if (transfer.userId !== null && transfer.userId !== me?.id) {
       set.status = 404;
       return { error: 'Transfer not found or has expired' };
     }
 
-    // Tier-aware file size cap. Pro: 10 GiB; Free/Anonymous: 1 GiB.
+    // Tier-aware file size cap.
     if (size > caps.maxFileSize) {
       set.status = 400;
       return {
@@ -183,11 +192,13 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
     }
 
     // Monthly upload volume — tier-aware cap, per-user when authed.
-    const volumeLimit = await checkAuthedOrIpVolumeLimit(me?.id, ipContext, {
+    // Charged at init; released on /abort-multipart per ADR-0009.
+    const volumeConfig = {
       ...rateLimiters.monthlyUploadVolume,
       maxBytes: caps.monthlyVolumeBytes,
       increment: size,
-    });
+    };
+    const volumeLimit = await checkAuthedOrIpVolumeLimit(me?.id, ipContext, volumeConfig);
     if (!volumeLimit.allowed) {
       set.status = 429;
       set.headers['Retry-After'] = String(volumeLimit.resetIn);
@@ -198,30 +209,34 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       };
     }
 
-    // Create file record in database
+    // Persist the file row before talking to R2 so we can clean it up
+    // if the multipart init fails.
     const file = await createFile({
       transferId,
       encryptedName,
       encryptedNameIv,
       fileIv,
       size,
-      mimeType: contentType || 'application/octet-stream'
+      mimeType: contentType || 'application/octet-stream',
     });
 
-    // Generate presigned upload URL. Binding ContentLength here means R2
-    // rejects any PUT whose body size differs from `size` — closes the
-    // limit-bypass path called out in audit doc 25 §A.2.
-    const presigned = await getPresignedUploadUrl(
-      file.r2Key,
-      'application/octet-stream', // Always octet-stream since content is encrypted
-      size,
-    );
-
-    return {
-      fileId: file.id,
-      uploadUrl: presigned.url,
-      expiresAt: presigned.expiresAt.toISOString()
-    };
+    try {
+      const { uploadId, partUrls } = await initMultipartUpload(file.r2Key, size);
+      return {
+        fileId: file.id,
+        r2Key: file.r2Key,
+        uploadId,
+        partUrls,
+      };
+    } catch (err) {
+      // Roll back the file row + volume reservation if R2 rejects.
+      // (Caller would otherwise have nothing to abort against.)
+      console.error('[upload] initMultipartUpload failed:', err);
+      await deleteFileById(file.id);
+      await releaseAuthedOrIpVolumeLimit(me?.id, ipContext, volumeConfig, size);
+      set.status = 502;
+      return { error: 'Storage initialisation failed. Please try again.' };
+    }
   }, {
     body: t.Object({
       transferId: t.String({ minLength: 21, maxLength: 21 }),
@@ -229,8 +244,123 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       encryptedName: t.String(),
       encryptedNameIv: t.String(),
       fileIv: t.String(),
-      size: t.Number()
-    })
+      size: t.Number(),
+    }),
+  })
+
+  // Stitch the uploaded Parts into the final R2 object. Called once
+  // per file after every Part's PUT has succeeded. No volume-cap
+  // interaction — that was charged at /init-multipart.
+  .post('/complete-multipart', async ({ body, ipContext, me, set }) => {
+    const { transferId, fileId, uploadId, parts } = body;
+
+    if (!isValidNanoId(transferId) || !isValidNanoId(fileId)) {
+      set.status = 400;
+      return { error: 'Invalid transfer or file ID' };
+    }
+
+    const transfer = await getValidTransfer(transferId);
+    if (!transfer) {
+      set.status = 404;
+      return { error: 'Transfer not found or has expired' };
+    }
+    if (transfer.userId !== null && transfer.userId !== me?.id) {
+      set.status = 404;
+      return { error: 'Transfer not found or has expired' };
+    }
+
+    const file = await getFileById(fileId);
+    if (!file || file.transferId !== transferId) {
+      set.status = 404;
+      return { error: 'File not found' };
+    }
+
+    if (parts.length === 0) {
+      set.status = 400;
+      return { error: 'At least one part is required.' };
+    }
+
+    try {
+      await completeMultipartUpload(file.r2Key, uploadId, parts);
+      return { fileId: file.id, size: file.size };
+    } catch (err) {
+      console.error('[upload] completeMultipartUpload failed:', err);
+      set.status = 502;
+      return { error: 'Failed to finalise upload. You can retry.' };
+    }
+  }, {
+    body: t.Object({
+      transferId: t.String({ minLength: 21, maxLength: 21 }),
+      fileId: t.String({ minLength: 21, maxLength: 21 }),
+      uploadId: t.String({ minLength: 1, maxLength: 2048 }),
+      parts: t.Array(
+        t.Object({
+          partNumber: t.Number({ minimum: 1, maximum: 10000 }),
+          etag: t.String({ minLength: 1, maxLength: 256 }),
+        }),
+        { minItems: 1 },
+      ),
+    }),
+  })
+
+  // Abort a single file's in-flight multipart upload. Tears down the
+  // R2 multipart upload (if it still exists), releases the monthly
+  // volume reservation, and deletes the file row. Idempotent —
+  // duplicate aborts and aborts of already-completed uploads no-op.
+  .post('/abort-multipart', async ({ body, ipContext, me, set }) => {
+    const { transferId, fileId, uploadId } = body;
+
+    if (!isValidNanoId(transferId) || !isValidNanoId(fileId)) {
+      set.status = 400;
+      return { error: 'Invalid transfer or file ID' };
+    }
+
+    const transfer = await getValidTransfer(transferId);
+    if (!transfer) {
+      set.status = 404;
+      return { error: 'Transfer not found or has expired' };
+    }
+    if (transfer.userId !== null && transfer.userId !== me?.id) {
+      set.status = 404;
+      return { error: 'Transfer not found or has expired' };
+    }
+
+    const file = await getFileById(fileId);
+    if (!file || file.transferId !== transferId) {
+      // Already cleaned up — treat as success so retried aborts
+      // don't surface confusing 404s to the client.
+      set.status = 204;
+      return null;
+    }
+
+    // Best-effort R2 abort. If it fails the lifecycle rule will catch
+    // the orphaned upload within 7 days (per the runbook); meanwhile
+    // we proceed with the DB + volume cleanup so the user's state is
+    // consistent.
+    try {
+      await abortMultipartUpload(file.r2Key, uploadId);
+    } catch (err) {
+      console.error('[upload] abortMultipartUpload failed (will rely on lifecycle rule):', err);
+    }
+
+    // Release the monthly volume reservation made at init.
+    const volumeConfig = {
+      ...rateLimiters.monthlyUploadVolume,
+      maxBytes: 0, // unused on release
+      increment: 0,
+    };
+    await releaseAuthedOrIpVolumeLimit(me?.id, ipContext, volumeConfig, file.size);
+
+    await deleteFileById(file.id);
+
+    set.status = 204;
+    return null;
+  }, {
+    body: t.Object({
+      transferId: t.String({ minLength: 21, maxLength: 21 }),
+      fileId: t.String({ minLength: 21, maxLength: 21 }),
+      uploadId: t.String({ minLength: 1, maxLength: 2048 }),
+    }),
   })
 
   // Complete the transfer (called after all files are uploaded)

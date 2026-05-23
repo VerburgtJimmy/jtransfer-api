@@ -77,13 +77,13 @@ describe("POST /api/upload/create-transfer — ownership at creation", () => {
 // ─── 2. Mutating endpoints: non-owner = 404 (D-088) ─────────────────────────
 
 describe("Mutating endpoints — non-owner returns 404 (not 403)", () => {
-  it("request-upload-url: non-owner gets 404 on an owned transfer", async () => {
+  it("init-multipart: non-owner gets 404 on an owned transfer", async () => {
     const { user: owner } = await createAuthedUser();
     const { cookie: stranger } = await createAuthedUser();
 
     const owned = await createTransfer(1, undefined, undefined, owner.id);
     const res = await app.handle(
-      authedRequest(stranger, `${APP_URL}/api/upload/request-upload-url`, jsonBody({
+      authedRequest(stranger, `${APP_URL}/api/upload/init-multipart`, jsonBody({
         transferId: owned.id,
         contentType: "application/octet-stream",
         encryptedName: "x".repeat(32),
@@ -124,7 +124,7 @@ describe("Mutating endpoints — non-owner returns 404 (not 403)", () => {
     const owned = await createTransfer(1, undefined, undefined, owner.id);
 
     const res = await app.handle(
-      new Request(`${APP_URL}/api/upload/request-upload-url`, jsonBody({
+      new Request(`${APP_URL}/api/upload/init-multipart`, jsonBody({
         transferId: owned.id,
         contentType: "application/octet-stream",
         encryptedName: "x".repeat(32),
@@ -145,7 +145,7 @@ describe("Anonymous transfer flow (and NULL-owner backfill rows)", () => {
     expect(anon.userId).toBeNull();
 
     const uploadRes = await app.handle(
-      new Request(`${APP_URL}/api/upload/request-upload-url`, jsonBody({
+      new Request(`${APP_URL}/api/upload/init-multipart`, jsonBody({
         transferId: anon.id,
         contentType: "application/octet-stream",
         encryptedName: "x".repeat(32),

@@ -469,6 +469,14 @@ export async function getFileById(id: string): Promise<File | null> {
   return file ?? null;
 }
 
+// Hard-delete a single file row by ID. Used by the multipart abort
+// path (ADR-0009) — the file never completed so there's no risk of
+// dangling Transfer state, and we want the row gone (not just
+// soft-deleted) so it doesn't appear in any per-transfer queries.
+export async function deleteFileById(id: string): Promise<void> {
+  await db.delete(files).where(eq(files.id, id));
+}
+
 export async function markFileAsDeleted(id: string): Promise<void> {
   await db
     .update(files)

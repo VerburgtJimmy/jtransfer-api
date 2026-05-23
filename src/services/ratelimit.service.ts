@@ -302,6 +302,77 @@ export async function checkAuthedOrIpVolumeLimit(
 }
 
 /**
+ * Decrement a volume counter (bytes) — the inverse of `checkVolumeLimit`'s
+ * increment. Used to release the monthly upload-volume reservation when a
+ * Multipart upload is explicitly aborted (ADR-0009). Caller passes the same
+ * `identifier` and `config.prefix` they used when reserving; only the
+ * `bytes` argument is consumed from `config`.
+ *
+ * Safe-clamped to zero — we never let the counter go negative even if the
+ * caller asks to release more than was reserved (which shouldn't happen,
+ * but a bug in caller code shouldn't translate to a free-volume exploit).
+ */
+export async function releaseVolumeLimit(
+  identifier: string,
+  config: VolumeLimitConfig,
+  bytes: number,
+): Promise<void> {
+  if (bytes <= 0) return;
+  const key = `volume:${config.prefix}:${identifier}`;
+  const redisClient = getRedis();
+
+  if (redisClient && redisAvailable) {
+    try {
+      // Read-then-write rather than DECRBY so we can clamp to zero. The
+      // race against a concurrent CHECK is benign — worst case the
+      // CHECK saw a slightly higher counter than reality and rejected,
+      // which is fail-closed.
+      const current = await redisClient.get(key);
+      const currentValue = current ? parseInt(current, 10) : 0;
+      const next = Math.max(0, currentValue - bytes);
+      if (next === 0) {
+        await redisClient.del(key);
+      } else {
+        const ttl = await redisClient.ttl(key);
+        if (ttl > 0) {
+          await redisClient.set(key, String(next), "EX", ttl);
+        } else {
+          await redisClient.set(key, String(next), "EX", config.windowSeconds);
+        }
+      }
+      return;
+    } catch (err) {
+      console.warn("[RateLimit] Redis error in volume release, falling back to memory:", err);
+    }
+  }
+
+  const counter = memoryCounters.get(key);
+  if (!counter || Date.now() > counter.resetAt) return;
+  counter.value = Math.max(0, counter.value - bytes);
+  if (counter.value === 0) {
+    memoryCounters.delete(key);
+  }
+}
+
+/**
+ * Tier-aware wrapper around `releaseVolumeLimit`. Mirrors the
+ * authed-or-IP pattern so the call site doesn't pick the right
+ * primitive itself.
+ */
+export async function releaseAuthedOrIpVolumeLimit(
+  userId: string | null | undefined,
+  ipContext: IpContext,
+  config: VolumeLimitConfig,
+  bytes: number,
+): Promise<void> {
+  if (userId) {
+    return releaseVolumeLimit(userId, config, bytes);
+  }
+  const identifier = await ipRateLimitIdentifier(ipContext);
+  return releaseVolumeLimit(identifier, config, bytes);
+}
+
+/**
  * Read a rate-limit counter without incrementing — used by the usage
  * endpoint to surface "X of Y used" without consuming a slot. Returns
  * `{ used, resetIn }` rather than the `RateLimitResult` shape because

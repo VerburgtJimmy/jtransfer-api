@@ -1,9 +1,12 @@
 import {
   S3Client,
-  PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
   HeadObjectCommand,
+  CreateMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
+  UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "../config/env";
@@ -19,52 +22,18 @@ const r2Client = new S3Client({
 
 const BUCKET_NAME = env.R2_BUCKET_NAME;
 
-// Presigned URL expiration times
-const UPLOAD_URL_EXPIRY = 60 * 60; // 1 hour for uploads
-const DOWNLOAD_URL_EXPIRY = 15 * 60; // 15 minutes for downloads
-
-export interface PresignedUploadUrl {
-  url: string;
-  key: string;
-  expiresAt: Date;
-}
+// Presigned URL expiration times.
+// Multipart upload URLs get a longer expiry so very large transfers on
+// slow connections finish before signature expiry — 1 MB/s on a 10 GiB
+// upload is ~2.8 h, comfortably under the 4 h budget. PUT URLs are
+// write-only and bound to (key, content-length), so the extra exposure
+// window is bounded (ADR-0009).
+const UPLOAD_URL_EXPIRY = 4 * 60 * 60; // 4 hours
+const DOWNLOAD_URL_EXPIRY = 15 * 60; // 15 minutes
 
 export interface PresignedDownloadUrl {
   url: string;
   expiresAt: Date;
-}
-
-/**
- * Generate a presigned URL for uploading a file directly to R2.
- *
- * When `contentLength` is provided, it is baked into the signature: R2 will
- * reject any PUT whose actual body length differs, which prevents a client
- * from uploading more (or less) than the size we already accounted for in
- * the per-file / per-transfer / monthly volume limits (audit doc 25 §A.2).
- */
-export async function getPresignedUploadUrl(
-  key: string,
-  contentType: string = "application/octet-stream",
-  contentLength?: number
-): Promise<PresignedUploadUrl> {
-  const command = new PutObjectCommand({
-    Bucket: BUCKET_NAME,
-    Key: key,
-    ContentType: contentType,
-    ContentLength: contentLength,
-  });
-
-  const url = await getSignedUrl(r2Client, command, {
-    expiresIn: UPLOAD_URL_EXPIRY,
-    // Without this, the SDK only signs the standard host/x-amz-* set and
-    // omits content-length from SignedHeaders — meaning the constraint
-    // wouldn't actually be enforced at the bucket. Force it in.
-    unhoistableHeaders: new Set(["content-length"]),
-  });
-
-  const expiresAt = new Date(Date.now() + UPLOAD_URL_EXPIRY * 1000);
-
-  return { url, key, expiresAt };
 }
 
 /**
@@ -120,4 +89,139 @@ export async function deleteFromR2(key: string): Promise<void> {
   });
 
   await r2Client.send(command);
+}
+
+// ─── Multipart upload (ADR-0009) ─────────────────────────────────────────────
+//
+// S3-style multipart upload: init → upload parts → complete (or abort).
+// Each Part is signed with its own presigned URL so the browser uploads
+// directly to R2; the server never proxies the bytes.
+
+export const MULTIPART_PART_SIZE = 8 * 1024 * 1024; // 8 MB per Part (ADR-0009)
+
+export interface PresignedPartUrl {
+  partNumber: number;
+  url: string;
+  contentLength: number;
+}
+
+export interface MultipartUploadInit {
+  uploadId: string;
+  key: string;
+  partUrls: PresignedPartUrl[];
+}
+
+export interface MultipartCompletePart {
+  partNumber: number;
+  etag: string;
+}
+
+/**
+ * Begin a Multipart upload and return all Part URLs in one batch.
+ *
+ * Splits `totalBytes` into 8 MB Parts (final Part takes the remainder)
+ * and presigns one URL per Part. Each URL is bound to its specific
+ * `partNumber` + `contentLength`, so R2 will reject a body whose size
+ * doesn't match — the same per-Part size constraint that the old
+ * single-PUT path used at the whole-file level (audit doc 25 §A.2).
+ *
+ * The Upload ID returned by R2 ties every subsequent UploadPart /
+ * Complete / Abort call back to this Multipart upload.
+ */
+export async function initMultipartUpload(
+  key: string,
+  totalBytes: number,
+  contentType: string = "application/octet-stream",
+): Promise<MultipartUploadInit> {
+  const createResult = await r2Client.send(
+    new CreateMultipartUploadCommand({
+      Bucket: BUCKET_NAME,
+      Key: key,
+      ContentType: contentType,
+    }),
+  );
+  const uploadId = createResult.UploadId;
+  if (!uploadId) {
+    throw new Error("R2 CreateMultipartUpload returned no UploadId");
+  }
+
+  const partCount = Math.max(1, Math.ceil(totalBytes / MULTIPART_PART_SIZE));
+  const partUrls: PresignedPartUrl[] = [];
+
+  for (let i = 0; i < partCount; i++) {
+    const partNumber = i + 1; // S3 part numbers are 1-indexed
+    const offset = i * MULTIPART_PART_SIZE;
+    const isLast = i === partCount - 1;
+    const contentLength = isLast ? totalBytes - offset : MULTIPART_PART_SIZE;
+
+    const command = new UploadPartCommand({
+      Bucket: BUCKET_NAME,
+      Key: key,
+      UploadId: uploadId,
+      PartNumber: partNumber,
+      ContentLength: contentLength,
+    });
+
+    const url = await getSignedUrl(r2Client, command, {
+      expiresIn: UPLOAD_URL_EXPIRY,
+      unhoistableHeaders: new Set(["content-length"]),
+    });
+
+    partUrls.push({ partNumber, url, contentLength });
+  }
+
+  return { uploadId, key, partUrls };
+}
+
+/**
+ * Stitch the uploaded Parts into a single R2 object. `parts` must list
+ * every Part by number with its etag (the value R2 returned on each
+ * UploadPart). Order doesn't matter — S3 stitches by partNumber — but
+ * we sort defensively because R2 requires ascending order.
+ */
+export async function completeMultipartUpload(
+  key: string,
+  uploadId: string,
+  parts: MultipartCompletePart[],
+): Promise<void> {
+  const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
+  await r2Client.send(
+    new CompleteMultipartUploadCommand({
+      Bucket: BUCKET_NAME,
+      Key: key,
+      UploadId: uploadId,
+      MultipartUpload: {
+        Parts: sorted.map((p) => ({ PartNumber: p.partNumber, ETag: p.etag })),
+      },
+    }),
+  );
+}
+
+/**
+ * Discard a Multipart upload at R2. All uploaded Parts are deleted by
+ * R2 and the upload's storage cost stops accruing. Safe to call
+ * unconditionally — duplicate aborts are idempotent (404-equivalents
+ * are swallowed).
+ */
+export async function abortMultipartUpload(
+  key: string,
+  uploadId: string,
+): Promise<void> {
+  try {
+    await r2Client.send(
+      new AbortMultipartUploadCommand({
+        Bucket: BUCKET_NAME,
+        Key: key,
+        UploadId: uploadId,
+      }),
+    );
+  } catch (err) {
+    const status = (err as { $metadata?: { httpStatusCode?: number } })
+      .$metadata?.httpStatusCode;
+    const name = (err as { name?: string }).name;
+    if (status === 404 || name === "NoSuchUpload") {
+      return; // Already aborted / completed / never existed.
+    }
+    throw err;
+  }
 }
