@@ -1,12 +1,13 @@
-// IP minimization — audit doc 19, ADR-0002.
+// IP minimization.
 //
-// The API never persists a raw client IP. Inbound requests are resolved
-// to an `IpContext`: country + ASN + city, plus an `hmac()` method that
-// HMAC-SHA-256s the raw IP under a caller-supplied per-purpose salt for
-// correlation (rate limiting, session-anomaly detection).
+// The API never persists a raw client IP. Inbound requests are
+// resolved to an `IpContext`: country + ASN + city, plus an
+// `hmac()` method that HMAC-SHA-256s the raw IP under a
+// caller-supplied per-purpose salt for correlation (rate limiting,
+// session-anomaly detection).
 //
-// The raw IP lives inside this module only — it is captured at resolve
-// time, used inside `hmac()`, and never returned to callers.
+// The raw IP lives inside this module only — captured at resolve
+// time, used inside `hmac()`, never returned to callers.
 
 import { createHmac, type BinaryLike } from "node:crypto";
 import { existsSync } from "node:fs";

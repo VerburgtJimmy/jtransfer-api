@@ -41,8 +41,8 @@ const ENUMERATION_RESPONSE = {
   message: "If that email is registered, we sent a sign-in link.",
 };
 
-// Minimum constant-time floor for the request endpoint — defends timing-side
-// channels on the existing-vs-non-existing path. See audit doc 18 §4.
+// Minimum constant-time floor for the request endpoint — closes the
+// timing side-channel on the existing-vs-non-existing-email path.
 const REQUEST_TIMING_FLOOR_MS = 250;
 
 async function constantTimeRespond<T>(start: number, response: T): Promise<T> {
@@ -54,9 +54,10 @@ async function constantTimeRespond<T>(start: number, response: T): Promise<T> {
   return response;
 }
 
-// Generic uniform failure for the code path. Hides hit/miss timing and avoids
-// branching user-visible behaviour on the specific failure mode (missing
-// cookie, wrong code, burned row, expired row, etc.) per audit doc 21 §6.
+// Generic uniform failure for the code path. Hides hit/miss timing
+// and avoids branching user-visible behaviour on the specific
+// failure mode (missing cookie, wrong code, burned row, expired
+// row, etc.).
 async function constantTimeVerifyCodeFailure(
   start: number,
 ): Promise<{ error: string }> {
@@ -72,11 +73,11 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
   .use(authPlugin)
   .use(ipContextPlugin)
 
-  // Request a magic-link email. Always returns the same shape regardless of
-  // whether the email exists. Silent auto-create: a new account is created
-  // for unknown emails on verify (per D-078). Also emits a 6-digit code for
-  // the cross-device path (audit doc 21) and binds it to a pending-login
-  // cookie set on the response.
+  // Request a magic-link email. Always returns the same shape
+  // regardless of whether the email exists. Silent auto-create: a
+  // new account is created for unknown emails on verify. Also emits
+  // a 6-digit code for the cross-device path and binds it to a
+  // pending-login cookie set on the response.
   .post(
     "/request-magic-link",
     async ({ body, request, cookie, ipContext, set }) => {
@@ -120,9 +121,9 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
 
         await sendMagicLink({ to: email, link, expiresAt, ipContext, userAgent });
 
-        // Bind the code path to this device via a host-only pending cookie.
-        // Without this cookie, the 6-digit code is useless — restores the
-        // effective entropy. See audit doc 21 §3.
+        // Bind the code path to this device via a host-only pending
+        // cookie. Without this cookie the 6-digit code is useless —
+        // restores the effective entropy.
         cookie[PENDING_LOGIN_COOKIE_NAME].set({
           value: pendingSessionId,
           ...PENDING_LOGIN_COOKIE_OPTIONS,
@@ -151,10 +152,11 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
     },
   )
 
-  // Cross-device sign-in via a 6-digit code typed on the originating device.
-  // Code is bound to the pending-login cookie set by /request-magic-link;
-  // code alone (or cookie alone) is insufficient. Per-row attempt counter
-  // burns the row after CODE_MAX_ATTEMPTS wrong tries. See audit doc 21.
+  // Cross-device sign-in via a 6-digit code typed on the originating
+  // device. Code is bound to the pending-login cookie set by
+  // /request-magic-link; code alone (or cookie alone) is
+  // insufficient. The per-row attempt counter burns the row after
+  // CODE_MAX_ATTEMPTS wrong tries.
   .post(
     "/verify-code",
     async ({ body, cookie, ipContext, originRejected, request, set }) => {
@@ -237,7 +239,8 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
     },
   )
 
-  // Verify a magic-link token. Smart device detection (audit doc 21):
+  // Verify a magic-link token with same-device vs cross-device
+  // detection:
   //  - Same device as the requester (matching pending-login cookie): sign in
   //    here, set __Host-session, redirect to /dashboard.
   //  - Different device: don't sign in here. Mint a 6-digit code, store its
@@ -335,8 +338,8 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
         // / verify-code sessions and any pre-migration rows. Drives the
         // "Used to sign in here" hint on /dashboard/settings.
         currentAuthenticatorId: currentAuthenticatorId ?? null,
-        // Non-null once the user has completed vault setup (ADR-0004).
-        // Drives the dashboard's "set up vault" prompt and the route guard
+        // Non-null once the user has completed vault setup. Drives
+        // the dashboard's "set up vault" prompt and the route guard
         // that bounces signed-in users without a vault to /setup/vault.
         vaultSetupCompletedAt: me.vaultSetupCompletedAt
           ? me.vaultSetupCompletedAt.toISOString()

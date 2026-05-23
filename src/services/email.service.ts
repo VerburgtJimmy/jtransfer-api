@@ -1,8 +1,9 @@
-// Scaleway Transactional Email integration. Transactional only — no marketing
-// per Scaleway TEM ToS and project posture. See docs/audit/18-auth-security-baseline.md §9.
+// Scaleway Transactional Email integration. Transactional only —
+// no marketing, per Scaleway TEM ToS.
 //
-// In dev when SCW_TEM credentials are not configured, the magic link is logged
-// to stdout so flows can be tested without a real send.
+// In dev when SCW_TEM credentials are not configured, the magic
+// link is logged to stdout so flows can be tested without a real
+// send.
 
 import { env } from "../config/env";
 import type { IpContext } from "../utils/ipContext";
@@ -12,10 +13,10 @@ interface SendMagicLinkInput {
   link: string;
   expiresAt: Date;
   /**
-   * Derived request context (country / ASN / city). Per audit doc 19 §3 and
-   * D-083 the magic-link email body shows the derived signal — not the raw
-   * IP — so the user can still recognise legitimate sign-in attempts
-   * without us persisting (or transmitting) the IP itself.
+   * Derived request context (country / ASN / city). The magic-link
+   * email body shows this derived signal rather than the raw IP, so
+   * the user can recognise legitimate sign-in attempts without us
+   * persisting (or transmitting) the IP itself.
    */
   ipContext: IpContext;
   userAgent: string | null;

@@ -30,9 +30,8 @@ function isValidNanoId(id: string): boolean {
 
 const MIN_PASSWORD_LENGTH = 8;
 
-// Vault wrap blob is `wrap_iv(12) || ciphertext(32) || tag(16)` per
-// ADR-0004. Exact byte count gated server-side so the column stays
-// normalised (the client cannot smuggle arbitrary bytes through).
+// Vault wrap blob is `wrap_iv(12) || ciphertext(32) || tag(16)`.
+// Exact byte count enforced server-side so the column stays normalised.
 const WRAPPED_KEY_BYTES = 60;
 
 function decodeBase64Url(input: string): Uint8Array | null {
@@ -53,13 +52,11 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
   // Create a new transfer (group of files). If a session is present,
   // the transfer is owned by that user; otherwise it's anonymous
   // (user_id NULL). Ownership is set at creation and never re-assigned.
-  // See docs/audit/20-transfer-ownership.md §2.
   .post('/create-transfer', async ({ body, ipContext, me, set }) => {
     const caps = resolveCaps(me);
 
-    // Per-minute rate limit (NOT tier-aware — pure smoothing rate to
-    // absorb bursts, applies the same to Pro and Free). Per-user when
-    // authed, per-IP when anonymous (ADR-0006).
+    // Per-minute smoothing rate (not tier-aware — applies the same to
+    // every tier). Per-user when authed, per-IP otherwise.
     const rateLimit = await checkAuthedOrIpRateLimit(me?.id, ipContext, rateLimiters.upload);
     if (!rateLimit.allowed) {
       set.status = 429;
@@ -82,8 +79,7 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
 
     const { expiresInHours, password, maxDownloads, encryptedTitle, encryptedTitleIv } = body;
 
-    // Validate expiration against the tier's allowed list. Pro adds
-    // 7d/14d/30d; Free + Anonymous stay at the historical ≤72h options.
+    // Validate expiration against the tier's allowed list.
     if (!caps.allowedExpiryHours.includes(expiresInHours)) {
       set.status = 400;
       return {
@@ -105,8 +101,8 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       return { error: 'maxDownloads must be between 1 and 100.' };
     }
 
-    // Title is optional but both-or-neither (ADR-0005). On creation the
-    // null-clear case doesn't apply — a missing title just means "no title".
+    // Title is optional but both-or-neither — a missing title just
+    // means "no title".
     const titleResult = validateEncryptedTitle(encryptedTitle, encryptedTitleIv);
     if (!titleResult.ok) {
       set.status = 400;
@@ -135,11 +131,10 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
     })
   })
 
-  // Begin a multipart upload for one file. Replaces the old
-  // /request-upload-url endpoint per ADR-0009. Returns all Part URLs
-  // in one batch so the browser can upload Parts in parallel without
-  // per-Part round-trips back to us. Charges the monthly volume up
-  // front; /abort-multipart releases it.
+  // Begin a multipart upload for one file. Returns all Part URLs in
+  // one batch so the browser can upload Parts in parallel without
+  // per-Part round-trips. Monthly volume is charged here;
+  // /abort-multipart releases it.
   .post('/init-multipart', async ({ body, ipContext, me, set }) => {
     const caps = resolveCaps(me);
 
@@ -164,7 +159,7 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
     }
 
     // Owner-only on owned transfers; non-owner collapses to 404 to
-    // avoid leaking existence (audit doc 20 §4).
+    // avoid leaking existence.
     if (transfer.userId !== null && transfer.userId !== me?.id) {
       set.status = 404;
       return { error: 'Transfer not found or has expired' };
@@ -192,7 +187,7 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
     }
 
     // Monthly upload volume — tier-aware cap, per-user when authed.
-    // Charged at init; released on /abort-multipart per ADR-0009.
+    // Charged here; released on /abort-multipart.
     const volumeConfig = {
       ...rateLimiters.monthlyUploadVolume,
       maxBytes: caps.monthlyVolumeBytes,
@@ -379,13 +374,13 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       return { error: 'Transfer not found or has expired' };
     }
 
-    // Owner-only on owned transfers (see docs/audit/20 §4).
+    // Owner-only on owned transfers; non-owner collapses to 404.
     if (transfer.userId !== null && transfer.userId !== me?.id) {
       set.status = 404;
       return { error: 'Transfer not found or has expired' };
     }
 
-    // Vault wrap (ADR-0004): K_transfer wrapped under the user's K_vault.
+    // Vault wrap: K_transfer wrapped under the user's K_vault.
     // Anonymous transfers cannot vault; signed-in owners may. The wrap
     // blob is opaque to the server — only its byte count is validated.
     let vaultWrap: { wrappedKey: Uint8Array } | undefined;
@@ -403,9 +398,9 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
     }
 
     // Verify every declared file is actually in storage at the expected
-    // size before marking the transfer live. Without this the client
-    // could call /complete after a partial or skipped upload and leave
-    // recipients with broken downloads (audit doc 25 §A.3).
+    // size before marking the transfer live. Without this, a client
+    // could /complete after a partial or skipped upload and leave
+    // recipients with broken downloads.
     const transferFiles = await getFilesByTransferId(transferId);
     if (transferFiles.length === 0) {
       set.status = 409;
@@ -453,7 +448,7 @@ export const uploadRoutes = new Elysia({ prefix: '/api/upload' })
       return { error: 'Transfer not found' };
     }
 
-    // Owner-only on owned transfers (see docs/audit/20 §4).
+    // Owner-only on owned transfers; non-owner collapses to 404.
     if (transfer.userId !== null && transfer.userId !== me?.id) {
       set.status = 404;
       return { error: 'Transfer not found' };

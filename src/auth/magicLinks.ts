@@ -1,8 +1,9 @@
-// Magic-link token lifecycle: issue + consume. See docs/audit/18-auth-security-baseline.md §2.
-// Cross-device 6-digit code path: see audit doc 21 (smart-detection variant —
-// the code is generated only when /verify is clicked on a device that does
-// NOT carry the pending-login cookie, and is surfaced via URL fragment on a
-// dedicated frontend page so it never lands in email or server logs).
+// Magic-link token lifecycle: issue + consume.
+//
+// Cross-device 6-digit code: generated only when /verify is clicked
+// on a device that does NOT carry the pending-login cookie, and
+// surfaced via URL fragment on a dedicated frontend page so the
+// plaintext code never lands in email or server logs.
 
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -18,9 +19,9 @@ import {
 
 export const MAGIC_LINK_TTL_MS = 15 * 60 * 1000; // 15 minutes per ASVS 6.3.3
 
-// Per audit doc 21 §4 — burn the row after this many wrong attempts on the
-// code path. Honest typos get a small margin; brute force gets one row's
-// worth of attempts before request-a-new-link is required.
+// Burn the row after this many wrong attempts on the code path.
+// Honest typos get a small margin; brute force gets one row's worth
+// of attempts before request-a-new-link is required.
 export const CODE_MAX_ATTEMPTS = 3;
 
 interface IssueMagicLinkInput {
@@ -34,10 +35,10 @@ interface IssueMagicLinkResult {
   expiresAt: Date;
 }
 
-// IP minimization (audit doc 19 §2.1, ADR-0002): `magic_link_tokens` no
-// longer carries an IP column. The token itself is the secret — 256-bit,
-// single-use, 15-min TTL, hashed at rest — so an IP comparison adds no
-// meaningful defence and breaks the legitimate cross-device flow.
+// `magic_link_tokens` does not carry an IP column. The token
+// itself is the secret — 256-bit, single-use, 15-min TTL, hashed at
+// rest — so an IP comparison adds no meaningful defence and breaks
+// the legitimate cross-device flow.
 export async function issueMagicLink(input: IssueMagicLinkInput): Promise<IssueMagicLinkResult> {
   const token = generateToken();
   const tokenHash = await hashToken(token);

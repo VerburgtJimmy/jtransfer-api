@@ -1,12 +1,13 @@
-// Short-lived HMAC token proving the holder has cleared a transfer's password
-// gate. Issued by /api/download/transfer/:id/verify and required by
-// /api/download/file/:id/url when the transfer is password-protected.
-// See docs/audit/25-external-audit-findings.md §A.4.
+// Short-lived HMAC token proving the holder has cleared a
+// transfer's password gate. Issued by
+// /api/download/transfer/:id/verify and required by
+// /api/download/file/:id/url when the transfer is
+// password-protected.
 //
-// Format: `${transferId}.${expiresAtMs}.${base64url(HMAC-SHA256)}`. The HMAC
-// binds transferId + expiry under the server's DOWNLOAD_TOKEN_SECRET, so a
-// token issued for transfer A cannot be replayed against transfer B. The
-// token is stateless — no DB roundtrip on the verify side.
+// Format: `${transferId}.${expiresAtMs}.${base64url(HMAC-SHA256)}`.
+// The HMAC binds transferId + expiry under DOWNLOAD_TOKEN_SECRET,
+// so a token issued for transfer A cannot be replayed against
+// transfer B. Stateless — no DB roundtrip on verify.
 
 import { env } from "../config/env";
 import { constantTimeEqual } from "./tokens";

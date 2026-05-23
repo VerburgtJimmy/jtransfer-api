@@ -1,7 +1,6 @@
-// User-scoped endpoints. See docs/audit/20-transfer-ownership.md §5.
-//
-// All routes require an authenticated session. Non-owner access to owned
-// resources returns 404 (not 403) to avoid an existence oracle (D-088).
+// User-scoped endpoints. All routes require an authenticated session;
+// non-owner access to owned resources returns 404 (not 403) to avoid
+// an existence oracle.
 
 import { Elysia, t } from "elysia";
 import { authPlugin } from "../auth/middleware";
@@ -34,10 +33,7 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
   .use(ipContextPlugin)
 
   // Current usage against the authenticated user's tier caps. Reads
-  // from the rate-limit counters without consuming a slot (peek*),
-  // and pairs the readings with caps resolved from `users.tier`
-  // (ADR-0006). Drives the /dashboard/settings/usage page and the
-  // 80%/95% in-product banners.
+  // the rate-limit counters without consuming a slot.
   .get("/usage", async ({ me, set }) => {
     if (!me) {
       set.status = 401;
@@ -127,8 +123,8 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
 
   // Per-file metadata for an owned transfer (encrypted filename + IV +
   // size + mime). Used by the dashboard to decrypt filenames after the
-  // vault key has unwrapped K_transfer client-side. Not-owned / not-found
-  // both collapse to 404 (D-088). See docs/audit/28 §3.
+  // vault key has unwrapped K_transfer client-side. Not-owned /
+  // not-found both collapse to 404.
   .get(
     "/transfers/:id/files",
     async ({ me, params, set }) => {
@@ -161,11 +157,11 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
     },
   )
 
-  // Owner-only title rewrite. The title is encrypted client-side under
-  // the transfer's fragment key (ADR-0005); the server only persists the
+  // Owner-only title rewrite. The title is encrypted client-side
+  // under the transfer's fragment key; the server only persists the
   // opaque ciphertext + IV. `null` for both fields clears the title;
-  // both-or-neither is enforced. Non-owner / not-found / soft-deleted
-  // collapse to 404 (D-088).
+  // both-or-neither is enforced. Non-owner / not-found /
+  // soft-deleted collapse to 404.
   .put(
     "/transfers/:id/title",
     async ({ me, params, body, originRejected, set }) => {
@@ -253,7 +249,7 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
 
       const ok = await softDeleteOwnedTransfer(me.id, id);
       if (!ok) {
-        // Not found, not owned, or already deleted — all collapse to 404 (D-088).
+        // Not found, not owned, or already deleted — all collapse to 404.
         set.status = 404;
         return { error: "Not found" };
       }
@@ -271,7 +267,7 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
     },
   )
 
-  // Account export (GDPR Article 20). See docs/audit/24-right-to-portability.md.
+  // Account export — GDPR Article 20 (data portability).
   .get(
     "/export",
     async ({ me, ipContext, request, set }) => {
@@ -307,7 +303,7 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
     },
   )
 
-  // Account erasure. See docs/audit/23-right-to-erasure.md.
+  // Account erasure — GDPR Article 17 (right to erasure).
   .delete(
     "/",
     async ({ me, ipContext, originRejected, request, body, cookie, set }) => {
@@ -327,8 +323,8 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
         return { error: "Rate limit exceeded. Try again later." };
       }
 
-      // Typed-email confirmation gate (D-091). Case-insensitive + trimmed via
-      // normaliseEmail; mismatch is opaque to avoid leaking which side failed.
+      // Typed-email confirmation gate. Case-insensitive + trimmed
+      // via normaliseEmail; mismatch is opaque.
       const confirmEmail = typeof body?.confirmEmail === "string" ? body.confirmEmail : "";
       if (!confirmEmail || normaliseEmail(confirmEmail) !== me.email) {
         set.status = 400;
@@ -343,8 +339,8 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
 
       await eraseAccount({ user: me, ipContext, userAgent });
 
-      // Best-effort notification (D-091). Failure must not turn the response
-      // into a 5xx — the erasure already committed.
+      // Best-effort notification. The erasure already committed, so
+      // a send failure must not turn the response into a 5xx.
       try {
         await sendAccountDeletedNotification({ to: formerEmail });
       } catch (err) {

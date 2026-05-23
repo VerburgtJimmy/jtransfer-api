@@ -1,22 +1,7 @@
-// Polar SDK integration per ADR-0007. Three surfaces:
-//
-//   - Checkout session creation — `createProCheckout(user, cycle)`. The
-//     `externalCustomerId` is set to our `user.id`, which Polar persists
-//     on the Customer and replays on every webhook event for that
-//     customer. This is how we route inbound webhook events back to the
-//     right JTransfer User row.
-//
-//   - Customer portal session — `createPortalSession(customerId)`.
-//     Returns a Polar-hosted URL where the user can cancel, update
-//     payment method, view invoices. We do not build any of that UI
-//     ourselves (the load-bearing reason MoR pays off).
-//
-//   - Webhook verification + parsing — `parseWebhook(body, headers)`.
-//     Wraps the SDK's `validateEvent` so the route handler doesn't have
-//     to know about the standard-webhooks signature scheme directly.
-//
-// Tier-sync logic and the `subscriptions` table writes live in the
-// route handler (`billing.routes.ts`) — this service stays narrow.
+// Polar SDK wrapper. The browser never talks to Polar directly — all
+// calls (checkout / portal / webhook verification) go through these
+// helpers. Webhook signatures use the standard-webhooks spec via
+// `validateEvent`.
 
 import { Polar } from "@polar-sh/sdk";
 import { validateEvent, WebhookVerificationError } from "@polar-sh/sdk/webhooks";
@@ -25,11 +10,8 @@ import type { User } from "../db/schema";
 
 let cachedClient: Polar | null = null;
 
-/**
- * Lazy Polar SDK client. Lazy so test environments that don't set the
- * access token can still import this module (typical for tests that
- * exercise the webhook signature path with mocked dependencies).
- */
+// Lazy init so test environments without an access token can still
+// import this module.
 function client(): Polar {
   if (!cachedClient) {
     if (!env.POLAR_ACCESS_TOKEN) {
@@ -48,10 +30,10 @@ function client(): Polar {
 export type BillingCycle = "monthly" | "annual";
 
 /**
- * Create a checkout session for the Pro plan. The returned `url` is a
- * Polar-hosted checkout page; the frontend redirects the user there.
- * On successful purchase Polar fires `subscription.created` to our
- * webhook with `customer.externalId = user.id`.
+ * Create a checkout session for the Pro plan. The returned `url` is
+ * Polar-hosted; the frontend redirects the user there. We set
+ * `externalCustomerId` to our user ID so subsequent webhook events
+ * can be routed back to the right user row.
  */
 export async function createProCheckout(
   user: User,
@@ -88,9 +70,7 @@ export async function createPortalSession(customerId: string): Promise<{ url: st
 
 /**
  * Cancel a subscription immediately (no proration). Used by the
- * account-erasure flow — when the user erases their account we don't
- * want to keep them paying for a service they no longer have access
- * to. Polar handles the invoice/refund logic per their MoR policy.
+ * account-erasure flow — Polar handles the invoice/refund logic.
  */
 export async function cancelSubscriptionImmediately(
   polarSubscriptionId: string,
@@ -99,10 +79,9 @@ export async function cancelSubscriptionImmediately(
 }
 
 /**
- * Parse + verify an inbound webhook payload. Returns the parsed event
- * on success, throws `WebhookVerificationError` on signature mismatch
- * (route handler converts to 401). Header keys are case-insensitive
- * per the standard-webhooks spec.
+ * Parse + verify an inbound webhook payload. Throws
+ * `WebhookVerificationError` on signature mismatch. Header keys are
+ * case-insensitive per the standard-webhooks spec.
  */
 export function parseWebhook(
   body: string,

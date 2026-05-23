@@ -3,11 +3,11 @@ import { env } from '../config/env';
 import { getActiveSalt } from './saltService';
 import type { IpContext } from '../utils/ipContext';
 
-// Sliding-window check + add in one round trip.
-// Without this, two concurrent MULTIs against the same key can each see
-// count = N-1, both ZADD, and the limiter ends up at N+1 (audit doc 25 §B.2).
-// Returning [allowed (0|1), countAfter] keeps the API identical to the
-// previous MULTI-then-ZREM dance, just race-free.
+// Sliding-window check + add in one round trip. Without this, two
+// concurrent MULTIs against the same key can each see count = N-1,
+// both ZADD, and the limiter ends up at N+1. Returning
+// [allowed (0|1), countAfter] keeps the API identical to a
+// MULTI-then-ZREM sequence but race-free.
 export const SLIDING_WINDOW_LUA = `
 local window_start = tonumber(ARGV[1])
 local now = tonumber(ARGV[2])
@@ -148,13 +148,12 @@ export async function checkRateLimit(
 
 /**
  * IP-keyed rate-limit check. The Redis key is built from
- * `HMAC(ratelimit_salt, ip)` — the raw IP never enters a key, log, or
- * counter (audit doc 19 §4.2, ADR-0002, D-082, D-086).
+ * `HMAC(ratelimit_salt, ip)` so the raw IP never enters a key, log,
+ * or counter.
  *
- * The ratelimit salt rotates every 35 days, retained 35 days. That
- * cadence is `max(rate-limit window) + buffer`, so a single salt always
- * covers a full counter lifetime — counters expire before salts rotate,
- * and no rehash is ever needed.
+ * The ratelimit salt rotates every 35 days (≥ max rate-limit window),
+ * so a single salt always covers a full counter lifetime — counters
+ * expire before salts rotate and no rehash is ever needed.
  */
 export async function checkIpRateLimit(
   ipContext: IpContext,
@@ -165,11 +164,9 @@ export async function checkIpRateLimit(
 }
 
 /**
- * Tier-aware rate-limit check. Routes that need "per-user when authed,
- * per-IP when anonymous" call this rather than picking the right primitive
- * themselves. Per ADR-0006, all upload-route count/volume limiters use this
- * policy — authenticated users see their cap unified across devices and
- * networks; anonymous traffic falls back to the IP-keyed bucket.
+ * Tier-aware rate-limit check. Per-user when authed, per-IP otherwise —
+ * authenticated users see their cap unified across devices and networks;
+ * anonymous traffic falls back to the IP-keyed bucket.
  */
 export async function checkAuthedOrIpRateLimit(
   userId: string | null | undefined,
@@ -198,7 +195,7 @@ async function checkRedisRateLimit(
 
     // One Lua round-trip: prune old → count → add iff under cap → set TTL.
     // Returns [0|1, countAfter]. Race-free vs concurrent callers on the
-    // same key (audit doc 25 §B.2, decision D-103).
+    // same key (a check-then-add sequence in two round-trips can race).
     const [allowedFlag, countAfter] = await (redis as RedisWithSlidingWindow)
       .jtSlidingWindow(
         key,
@@ -288,8 +285,8 @@ export async function checkIpVolumeLimit(
 
 /**
  * Tier-aware volume counter. Per-user when a session is attached,
- * per-IP otherwise. The matching primitive to `checkAuthedOrIpRateLimit`
- * for byte-counters (per ADR-0006).
+ * per-IP otherwise. The matching primitive to
+ * `checkAuthedOrIpRateLimit` for byte-counters.
  */
 export async function checkAuthedOrIpVolumeLimit(
   userId: string | null | undefined,
@@ -302,15 +299,13 @@ export async function checkAuthedOrIpVolumeLimit(
 }
 
 /**
- * Decrement a volume counter (bytes) — the inverse of `checkVolumeLimit`'s
- * increment. Used to release the monthly upload-volume reservation when a
- * Multipart upload is explicitly aborted (ADR-0009). Caller passes the same
- * `identifier` and `config.prefix` they used when reserving; only the
- * `bytes` argument is consumed from `config`.
+ * Decrement a volume counter (bytes) — the inverse of
+ * `checkVolumeLimit`'s increment. Caller passes the same `identifier`
+ * and `config.prefix` used when reserving; only `bytes` is consumed
+ * from `config`.
  *
- * Safe-clamped to zero — we never let the counter go negative even if the
- * caller asks to release more than was reserved (which shouldn't happen,
- * but a bug in caller code shouldn't translate to a free-volume exploit).
+ * Clamped to zero so a bug in caller code can never create a
+ * free-volume exploit by over-releasing.
  */
 export async function releaseVolumeLimit(
   identifier: string,
@@ -519,22 +514,16 @@ function checkMemoryVolumeLimit(
   };
 }
 
-// Bumped whenever the rate-limit keyspace changes shape. Startup flushes
-// once if Redis doesn't already record this version, then sets it. So
-// the IP-minimization cutover (raw-IP keys → HMAC-IP keys) drops legacy
-// keys atomically on first boot post-deploy, but doesn't keep flushing
-// the new HMAC-keyed entries on every subsequent restart.
+// Bumped whenever the rate-limit keyspace changes shape. On startup,
+// if Redis doesn't record the current version, we flush all rate-limit
+// keys once and then set the version so subsequent boots no-op.
 const RATELIMIT_KEYSPACE_VERSION = '2';
 const RATELIMIT_VERSION_KEY = 'ratelimit:keyspace-version';
 
 /**
- * One-shot startup flush of all rate-limit keys, gated by a Redis-stored
- * keyspace version. Called once on boot. After the first successful
- * flush the version key is set and subsequent boots are no-ops (D-086).
- *
- * Trade-off accepted: at most ~30d of free traffic for any user with an
- * active monthly-upload counter at cutover. Bounded, small, and cleaner
- * than rehashing one-way HMAC keys (mathematically impossible anyway).
+ * One-shot startup flush of all rate-limit keys, gated by a
+ * Redis-stored keyspace version. Called once on boot; subsequent
+ * boots are no-ops until the version constant is bumped again.
  */
 export async function flushLegacyRateLimitKeys(): Promise<number> {
   const redisClient = getRedis();
@@ -584,26 +573,25 @@ export const rateLimiters = {
   // Monthly volume limit (bytes)
   monthlyUploadVolume: { prefix: 'monthly-upload-volume', windowSeconds: MONTH_SECONDS, maxBytes: env.RATE_LIMIT_MONTHLY_UPLOAD_GB },
 
-  // Auth — magic-link request + verify (per audit doc 18 §2)
+  // Auth — magic-link request + verify.
   authRequestPerEmail: { prefix: 'auth-request-email', windowSeconds: HOUR_SECONDS, maxRequests: env.RATE_LIMIT_AUTH_REQUEST_PER_HOUR_PER_EMAIL },
   authRequestPerIp: { prefix: 'auth-request-ip', windowSeconds: HOUR_SECONDS, maxRequests: env.RATE_LIMIT_AUTH_REQUEST_PER_HOUR_PER_IP },
   authVerifyPerIp: { prefix: 'auth-verify-ip', windowSeconds: 60, maxRequests: env.RATE_LIMIT_AUTH_VERIFY_PER_MINUTE_PER_IP },
 
-  // Per-user limits on /me/transfers (per audit doc 20 §6)
+  // Per-user limits on /me/transfers
   meTransfersList: { prefix: 'me-transfers-list', windowSeconds: 60, maxRequests: 60 },
   meTransfersDelete: { prefix: 'me-transfers-delete', windowSeconds: 60, maxRequests: 10 },
-  // Per-user limit on title rewrites (ADR-0005). Generous for legitimate
-  // edits, tight enough to bound mass-rewrite under session compromise.
+  // Title rewrites — generous for legitimate edits, tight enough to
+  // bound mass-rewrite under session compromise.
   meTransferTitle: { prefix: 'me-transfer-title', windowSeconds: 60, maxRequests: 30 },
 
-  // Per-user limit on DELETE /api/me (per audit doc 23 §7)
+  // Account erasure and export are intentionally strict — both are
+  // expensive operations that no legitimate user invokes in bursts.
   accountDelete: { prefix: 'account-delete', windowSeconds: HOUR_SECONDS, maxRequests: 5 },
-
-  // Per-user limit on GET /api/me/export (per audit doc 24 §7)
   accountExport: { prefix: 'account-export', windowSeconds: HOUR_SECONDS, maxRequests: 3 },
 
-  // Vault writes (ADR-0004). Setup is one-shot; password/phrase rewrap is
-  // gated to dampen brute-force-by-reupload of wrap blobs and accidental
+  // Vault writes — setup is one-shot; password/phrase rewrap is gated
+  // to dampen brute-force-by-reupload of wrap blobs and accidental
   // double-submits from the UI.
   vaultSetup: { prefix: 'vault-setup', windowSeconds: HOUR_SECONDS, maxRequests: 5 },
   vaultPasswordChange: { prefix: 'vault-password-change', windowSeconds: HOUR_SECONDS, maxRequests: 10 },

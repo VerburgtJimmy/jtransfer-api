@@ -18,13 +18,12 @@ export const transfers = pgTable('transfers', {
   isDeleted: boolean('is_deleted').default(false).notNull(),
   isCompleted: boolean('is_completed').default(false).notNull(),
   passwordHash: varchar('password_hash', { length: 255 }), // NULL = no password
-  // NULL = anonymous transfer. See docs/audit/20-transfer-ownership.md.
+  // NULL on anonymous transfers; otherwise references the creator.
   userId: varchar('user_id', { length: 21 }).references(() => users.id),
-  // Vault wrap layer — ADR-0004. NULL on anonymous rows; set on every
-  // signed-in upload (vault is mandatory post-redesign). Wraps K_transfer
-  // under the per-user K_vault — no per-credential reference, so a single
-  // wrap suffices.
-  // wrappedKey wire layout: wrap_iv(12B) || ciphertext(32B) || tag(16B) = 60 bytes.
+  // K_transfer wrapped under the owner's per-user K_vault. NULL on
+  // anonymous rows; set on every signed-in upload (vault is
+  // mandatory). Wire layout: iv(12B) || ciphertext(32B) || tag(16B)
+  // = 60 bytes.
   wrappedKey: bytea('wrapped_key'),
   // Optional human-readable title encrypted under the per-transfer fragment
   // key (AES-GCM 256), padded to a 32-byte multiple — same scheme as the
@@ -72,10 +71,10 @@ export type NewTransfer = typeof transfers.$inferInsert;
 export type File = typeof files.$inferSelect;
 export type NewFile = typeof files.$inferInsert;
 
-// Auth — magic-link primary, server-side sessions. See docs/audit/18-auth-security-baseline.md.
-//
-// Email is stored lowercased + trimmed (app-side normalisation) with a unique index.
-// Token hashes are hex-encoded SHA-256 (64 chars) — never store plaintext bearer tokens.
+// Auth — magic-link primary, server-side sessions.
+// Email is stored lowercased + trimmed (app-side normalisation) with
+// a unique index. Token hashes are hex-encoded SHA-256 (64 chars) —
+// never store plaintext bearer tokens.
 
 export const users = pgTable('users', {
   id: varchar('id', { length: 21 }).primaryKey(), // nanoid
@@ -83,13 +82,12 @@ export const users = pgTable('users', {
   tier: varchar('tier', { length: 16 }).default('free').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
-  // Set when the user finishes the mandatory vault setup flow (ADR-0004).
+  // Set when the user finishes the mandatory vault setup flow.
   // The dashboard route guard treats NULL as "redirect to /setup/vault".
   vaultSetupCompletedAt: timestamp('vault_setup_completed_at', { withTimezone: true }),
-  // Polar customer ID — stable 1:1 identifier with this user on the
-  // payment-processor side (ADR-0007). Set on first checkout; nullable
-  // for users who never reach billing. See ADR-0008 for the
-  // accompanying subscriptions table.
+  // Stable 1:1 identifier with this user on the payment-processor
+  // side. Set on first checkout; nullable for users who never reach
+  // billing.
   polarCustomerId: varchar('polar_customer_id', { length: 64 }),
 }, (table) => ({
   emailUnique: uniqueIndex('users_email_unique').on(table.email),
@@ -107,28 +105,25 @@ export const sessions = pgTable('sessions', {
   lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
-  // IP minimization (audit doc 19, ADR-0002). No raw IP stored.
-  // `country` is ISO 3166-1 alpha-2 or "XX" when unresolvable.
-  // `ip_hmac` is HMAC-SHA-256(correlation_secret, raw_ip) at session
-  // creation; recomputed and compared per request for anomaly detection.
-  // `correlation_secret` is 32 random bytes minted per session and
-  // wiped on revoke/expiry — once cleared, the stored ip_hmac is
-  // permanently un-correlatable to any IP.
+  // IP minimization: no raw IP stored. `country` is ISO 3166-1
+  // alpha-2 or "XX" when unresolvable. `ip_hmac` is
+  // HMAC-SHA-256(correlation_secret, raw_ip) at session create,
+  // recomputed and compared per request for anomaly detection.
+  // `correlation_secret` is wiped on revoke/expiry — once cleared,
+  // the stored ip_hmac is permanently un-correlatable to any IP.
   country: varchar('country', { length: 2 }),
   asn: integer('asn'),
-  // ASN organisation label captured at session-create (e.g. "Proximus").
-  // Stored so the session-anomaly notification email can render a human
-  // name without needing MaxMind at send time. No extra privacy cost vs
+  // ASN organisation label (e.g. "KPN") captured at session create
+  // so the anomaly-notification email can render a human name
+  // without a MaxMind lookup at send time. No extra privacy cost vs
   // the integer above — the integer already identifies the org.
   asnOrg: varchar('asn_org', { length: 255 }),
   ipHmac: bytea('ip_hmac'),
   correlationSecret: bytea('correlation_secret'),
   userAgent: text('user_agent'),
-  // Set on sessions minted via a passkey assertion (passkey/login/finish).
-  // Drives the "Used to sign in here" hint and the pre-confirm warning on
-  // /dashboard/settings. NULL for sessions minted via magic link / verify-code
-  // and for any rows that pre-date the column — there is no backfill, so
-  // legacy sessions render without the hint by construction.
+  // Set on sessions minted via a passkey assertion. Drives the
+  // "Used to sign in here" hint on /dashboard/settings. NULL for
+  // sessions minted via magic link / verify-code.
   authenticatorId: varchar('authenticator_id', { length: 21 })
     .references(() => authenticators.id, { onDelete: 'set null' }),
 }, (table) => ({
@@ -140,17 +135,16 @@ export const magicLinkTokens = pgTable('magic_link_tokens', {
   id: varchar('id', { length: 21 }).primaryKey(), // nanoid
   email: varchar('email', { length: 320 }).notNull(),
   tokenHash: varchar('token_hash', { length: 64 }).notNull(), // hex SHA-256
-  // Cross-device 6-digit code: hex SHA-256 of zero-padded digits. Bound to
-  // pendingSessionId — code alone is insufficient. See audit doc 21.
+  // Cross-device 6-digit code: hex SHA-256 of zero-padded digits.
+  // Bound to pendingSessionId — code alone is insufficient.
   codeHash: varchar('code_hash', { length: 64 }),
   pendingSessionId: varchar('pending_session_id', { length: 21 }),
   codeAttempts: integer('code_attempts').default(0).notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   consumedAt: timestamp('consumed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  // IP minimization (audit doc 19, ADR-0002): no IP column. The token
-  // itself is the secret; layering an IP check on top would block the
-  // legitimate cross-device happy path.
+  // No IP column: the token itself is the secret, and layering an
+  // IP check would block the legitimate cross-device happy path.
   userAgent: text('user_agent'),
 }, (table) => ({
   tokenHashUnique: uniqueIndex('magic_link_tokens_token_hash_unique').on(table.tokenHash),
@@ -160,18 +154,17 @@ export const magicLinkTokens = pgTable('magic_link_tokens', {
     .where(sql`${table.pendingSessionId} IS NOT NULL`),
 }));
 
-// 30-day retention (audit doc 19, D-081 — cut from 90d). Daily purge job.
+// 30-day retention; daily purge job clears older rows.
 export const authEvents = pgTable('auth_events', {
   id: serial('id').primaryKey(),
   userId: varchar('user_id', { length: 21 }), // nullable — pre-account events log only email
   email: varchar('email', { length: 320 }), // captured for pre-account events
   eventType: varchar('event_type', { length: 32 }).notNull(),
-  // IP minimization (audit doc 19, ADR-0002). No raw IP stored.
-  // `ip_correlator` is HMAC-SHA-256 keyed against the active `auth_events`
-  // salt (24h rotation). `salt_id` records which salt was active so the
-  // correlator can be reproduced for verification within the window;
-  // when the salt is purged (30d retention) the correlator becomes
-  // permanently un-correlatable.
+  // IP minimization: no raw IP stored. `ip_correlator` is
+  // HMAC-SHA-256 keyed against the active `auth_events` salt (24h
+  // rotation). `salt_id` records which salt was active so the
+  // correlator can be reproduced within the window; once the salt
+  // is purged the correlator becomes permanently un-correlatable.
   country: varchar('country', { length: 2 }),
   asn: integer('asn'),
   ipCorrelator: bytea('ip_correlator'),
@@ -184,15 +177,15 @@ export const authEvents = pgTable('auth_events', {
   saltCorrelatorIdx: index('auth_events_salt_correlator_idx').on(table.saltId, table.ipCorrelator),
 }));
 
-// Per-purpose rotating salts for IP correlation (audit doc 19 §4.3,
-// ADR-0002, D-082). `namespace` discriminates between rotation cadences:
+// Per-purpose rotating salts for IP correlation. `namespace`
+// discriminates between rotation cadences:
 //
 //   - 'auth_events'  — 24h rotation, 30d retention
 //   - 'ratelimit'    — 35d rotation, 35d retention
 //
-// `correlation_secret` for `sessions` is *not* in this table — it's
-// stored per-row on `sessions.correlation_secret` because per-session
-// secrets are per-row by construction.
+// `correlation_secret` for `sessions` is *not* here — sessions
+// store their secret per-row because per-session secrets are
+// per-row by construction.
 export const salts = pgTable('salts', {
   id: serial('id').primaryKey(),
   namespace: varchar('namespace', { length: 32 }).notNull(),
@@ -216,13 +209,13 @@ export type NewAuthEvent = typeof authEvents.$inferInsert;
 export type Salt = typeof salts.$inferSelect;
 export type NewSalt = typeof salts.$inferInsert;
 
-// WebAuthn / passkeys — alternative login factor. See audit doc 27.
+// WebAuthn / passkeys — alternative login factor.
 //
-// One row per enrolled credential. No attestation statements retained
-// (`attestation: none` at registration). `device_type` and `backed_up`
-// come from the authenticator data BS/BE flags and drive UX badges
-// ("Sync'd" vs "This device"). Per ADR-0004, passkeys no longer
-// participate in vault key derivation — login factor only.
+// One row per enrolled credential. No attestation statements
+// retained (`attestation: none` at registration). `device_type` and
+// `backed_up` come from the authenticator data BS/BE flags and
+// drive UX badges ("Sync'd" vs "This device"). Passkeys are a login
+// factor only — they don't participate in vault key derivation.
 export const authenticators = pgTable('authenticators', {
   id: varchar('id', { length: 21 }).primaryKey(), // nanoid
   userId: varchar('user_id', { length: 21 }).notNull().references(() => users.id, { onDelete: 'cascade' }),
@@ -257,7 +250,7 @@ export const webauthnChallenges = pgTable('webauthn_challenges', {
   expiresAtIdx: index('webauthn_challenges_expires_at_idx').on(table.expiresAt),
 }));
 
-// Per-user vault metadata. 1:1 with users. See ADR-0004.
+// Per-user vault metadata. 1:1 with users.
 // Holds two AES-GCM wraps of the same random per-user K_vault:
 //   - wrap_password  = AES-GCM(KEK_password, K_vault)
 //     KEK_password = Argon2id(password, salt_password)
@@ -288,12 +281,11 @@ export type NewWebauthnChallenge = typeof webauthnChallenges.$inferInsert;
 export type UserVault = typeof userVaults.$inferSelect;
 export type NewUserVault = typeof userVaults.$inferInsert;
 
-// Pro subscriptions. Separate table rather than columns on `users` per
-// ADR-0008 — keeps history across cancel + re-subscribe cycles, maps
-// 1:1 onto Polar's subscription-centric webhook model, and makes a
-// future processor swap (e.g. Mollie) surgical. `users.tier` stays as
-// the denormalised cache for hot-path "is this user Pro?" reads;
-// webhook handlers maintain it from the canonical row here.
+// Pro subscriptions. Separate table rather than columns on `users`
+// so history survives cancel + re-subscribe cycles and maps cleanly
+// onto Polar's subscription-centric webhook model. `users.tier`
+// stays as the denormalised cache for hot-path "is this user Pro?"
+// reads; webhook handlers maintain it from the canonical row here.
 export const subscriptions = pgTable('subscriptions', {
   id: varchar('id', { length: 21 }).primaryKey(), // nanoid
   userId: varchar('user_id', { length: 21 }).notNull().references(() => users.id, { onDelete: 'cascade' }),

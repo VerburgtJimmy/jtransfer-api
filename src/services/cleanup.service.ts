@@ -54,7 +54,7 @@ export async function cleanupSoftDeletedTransfers(): Promise<number> {
   return count;
 }
 
-// Auth-related purges. See docs/audit/18-auth-security-baseline.md §8.
+// Auth-related purges.
 export async function cleanupAuthArtefacts(): Promise<{ tokens: number; sessions: number; events: number }> {
   const now = new Date();
   // Magic-link tokens: drop rows that expired or were consumed > 1h ago.
@@ -81,7 +81,7 @@ export async function cleanupAuthArtefacts(): Promise<{ tokens: number; sessions
     )
     .returning({ id: sessions.id });
 
-  // Auth events: 30-day retention (audit doc 19 D-081 — cut from 90d).
+  // Auth events: 30-day retention.
   const eventCutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const events = await db
     .delete(authEvents)

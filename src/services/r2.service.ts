@@ -22,14 +22,12 @@ const r2Client = new S3Client({
 
 const BUCKET_NAME = env.R2_BUCKET_NAME;
 
-// Presigned URL expiration times.
-// Multipart upload URLs get a longer expiry so very large transfers on
-// slow connections finish before signature expiry — 1 MB/s on a 10 GiB
-// upload is ~2.8 h, comfortably under the 4 h budget. PUT URLs are
-// write-only and bound to (key, content-length), so the extra exposure
-// window is bounded (ADR-0009).
-const UPLOAD_URL_EXPIRY = 4 * 60 * 60; // 4 hours
-const DOWNLOAD_URL_EXPIRY = 15 * 60; // 15 minutes
+// Upload URLs need a long-enough window for slow connections to finish a
+// multi-GiB upload before the signature expires (1 MB/s on a 10 GiB
+// upload ≈ 2.8 h). PUT URLs are write-only and bound to
+// (key, content-length).
+const UPLOAD_URL_EXPIRY = 4 * 60 * 60;
+const DOWNLOAD_URL_EXPIRY = 15 * 60;
 
 export interface PresignedDownloadUrl {
   url: string;
@@ -38,9 +36,8 @@ export interface PresignedDownloadUrl {
 
 /**
  * Look up an object's size in R2. Returns null when the object does not
- * exist (404 from HeadObject) so callers can treat absence + present-but-
- * mismatched as separate cases. Used by `/upload/complete` to verify that
- * every declared file actually landed at its expected key (audit doc 25 §A.3).
+ * exist (404 from HeadObject) so callers can distinguish "absent" from
+ * "present but mismatched size".
  */
 export async function headObject(key: string): Promise<{ size: number } | null> {
   try {
@@ -91,17 +88,15 @@ export async function deleteFromR2(key: string): Promise<void> {
   await r2Client.send(command);
 }
 
-// ─── Multipart upload (ADR-0009) ─────────────────────────────────────────────
+// ─── Multipart upload ────────────────────────────────────────────────────────
 //
-// S3-style multipart upload: init → upload parts → complete (or abort).
+// Standard S3 multipart: init → upload parts → complete (or abort).
 // Each Part is signed with its own presigned URL so the browser uploads
 // directly to R2; the server never proxies the bytes.
 
-// Part size: 16 MB. Bumped from the V1 value of 8 MB after the speed
-// audit — larger Parts amortise TCP slow-start better on fast
-// connections (~5-15% throughput win above 20 MB/s) without
-// meaningfully hurting slow ones. Retry cost rises proportionally
-// (3.2 s vs 1.6 s at 5 MB/s) but stays comfortable. See ADR-0009.
+// S3 minimum part size is 5 MB except for the final part. 16 MB sits in
+// the sweet spot for amortising TCP slow-start without making individual
+// retries expensive.
 export const MULTIPART_PART_SIZE = 16 * 1024 * 1024;
 
 export interface PresignedPartUrl {
@@ -124,14 +119,10 @@ export interface MultipartCompletePart {
 /**
  * Begin a Multipart upload and return all Part URLs in one batch.
  *
- * Splits `totalBytes` into 8 MB Parts (final Part takes the remainder)
- * and presigns one URL per Part. Each URL is bound to its specific
- * `partNumber` + `contentLength`, so R2 will reject a body whose size
- * doesn't match — the same per-Part size constraint that the old
- * single-PUT path used at the whole-file level (audit doc 25 §A.2).
- *
- * The Upload ID returned by R2 ties every subsequent UploadPart /
- * Complete / Abort call back to this Multipart upload.
+ * Each URL is bound to its specific `partNumber` + `contentLength`,
+ * so R2 will reject a body whose size doesn't match. The Upload ID
+ * ties every subsequent UploadPart / Complete / Abort call back to
+ * this Multipart upload.
  */
 export async function initMultipartUpload(
   key: string,
@@ -154,7 +145,8 @@ export async function initMultipartUpload(
   const partUrls: PresignedPartUrl[] = [];
 
   for (let i = 0; i < partCount; i++) {
-    const partNumber = i + 1; // S3 part numbers are 1-indexed
+    // S3 part numbers are 1-indexed.
+    const partNumber = i + 1;
     const offset = i * MULTIPART_PART_SIZE;
     const isLast = i === partCount - 1;
     const contentLength = isLast ? totalBytes - offset : MULTIPART_PART_SIZE;
@@ -180,9 +172,8 @@ export async function initMultipartUpload(
 
 /**
  * Stitch the uploaded Parts into a single R2 object. `parts` must list
- * every Part by number with its etag (the value R2 returned on each
- * UploadPart). Order doesn't matter — S3 stitches by partNumber — but
- * we sort defensively because R2 requires ascending order.
+ * every Part by number with its etag. Sorted defensively before send
+ * because R2 requires ascending order.
  */
 export async function completeMultipartUpload(
   key: string,
@@ -203,10 +194,8 @@ export async function completeMultipartUpload(
 }
 
 /**
- * Discard a Multipart upload at R2. All uploaded Parts are deleted by
- * R2 and the upload's storage cost stops accruing. Safe to call
- * unconditionally — duplicate aborts are idempotent (404-equivalents
- * are swallowed).
+ * Discard a Multipart upload at R2. Idempotent — duplicate aborts and
+ * aborts of already-completed uploads are swallowed.
  */
 export async function abortMultipartUpload(
   key: string,
@@ -224,9 +213,7 @@ export async function abortMultipartUpload(
     const status = (err as { $metadata?: { httpStatusCode?: number } })
       .$metadata?.httpStatusCode;
     const name = (err as { name?: string }).name;
-    if (status === 404 || name === "NoSuchUpload") {
-      return; // Already aborted / completed / never existed.
-    }
+    if (status === 404 || name === "NoSuchUpload") return;
     throw err;
   }
 }

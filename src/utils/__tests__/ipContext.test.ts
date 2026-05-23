@@ -1,4 +1,6 @@
-// IP minimization — unit coverage for `resolveIpContext`. See audit doc 19.
+// Unit coverage for `resolveIpContext` — the IP minimization
+// resolver that converts inbound requests to country + ASN + HMAC
+// correlator without ever returning the raw IP.
 //
 // Deterministic on purpose: we never call into the MMDB readers in these
 // tests. The MMDB path is exercised end-to-end by `scripts/auth-smoke.ts`,

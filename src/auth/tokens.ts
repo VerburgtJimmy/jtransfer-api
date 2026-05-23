@@ -1,8 +1,9 @@
-// Token generation, hashing, and constant-time comparison for magic-link and
-// session bearers. See docs/audit/18-auth-security-baseline.md §2 §3.
+// Token generation, hashing, and constant-time comparison for
+// magic-link and session bearers.
 //
-// Tokens are 32 random bytes (256 bits) per ASVS 6.3.3 / 3.2.2. The plaintext
-// bearer is base64url-encoded for transport. Storage is hex-encoded SHA-256
+// Tokens are 32 random bytes (256 bits) per OWASP ASVS 6.3.3 /
+// 3.2.2. The plaintext bearer is base64url-encoded for transport.
+// Storage is hex-encoded SHA-256
 // hash (64 chars) — plaintext is never persisted.
 
 const TOKEN_BYTE_LENGTH = 32;
@@ -33,8 +34,8 @@ const CODE_MOD = 10 ** CODE_DIGITS;
 const CODE_REJECT = Math.floor(2 ** 32 / CODE_MOD) * CODE_MOD;
 
 /**
- * Generate a uniformly random 6-digit numeric code, zero-padded to a string.
- * Used for cross-device magic-link sign-in. See audit doc 21 §4.
+ * Generate a uniformly random 6-digit numeric code, zero-padded to
+ * a string. Used for the cross-device magic-link sign-in path.
  */
 export function generateNumericCode(): string {
   const buf = new Uint32Array(1);

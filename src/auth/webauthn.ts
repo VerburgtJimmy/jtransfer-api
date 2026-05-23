@@ -7,9 +7,9 @@
 //    resulting authenticator row (registration) or bump sign_count
 //    (authentication).
 //
-// Passkeys are a login factor only — they no longer participate in vault
-// key derivation. The vault (K_vault) is wrapped under password and
-// recovery-phrase KEKs derived via Argon2id. See ADR-0004.
+// Passkeys are a login factor only — they don't participate in
+// vault key derivation. The vault (K_vault) is wrapped under
+// password and recovery-phrase KEKs derived via Argon2id.
 //
 // What this module does NOT do:
 //  - Mint sessions. Caller resolves the user and hands off to

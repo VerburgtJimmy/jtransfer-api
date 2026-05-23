@@ -179,8 +179,8 @@ describe("GET /api/me/usage", () => {
     expect(body.tier).toBe("pro");
     expect(body.monthlyVolume.capBytes).toBe(100 * GB);
     expect(body.dailyTransfers.cap).toBe(100);
-    expect(body.caps.maxFileSize).toBe(10 * GB);
-    expect(body.caps.maxTransferSize).toBe(10 * GB);
+    expect(body.caps.maxFileSize).toBe(2 * GB);
+    expect(body.caps.maxTransferSize).toBe(2 * GB);
     expect(body.caps.allowedExpiryHours).toContain(168);
     expect(body.caps.allowedExpiryHours).toContain(720);
   });

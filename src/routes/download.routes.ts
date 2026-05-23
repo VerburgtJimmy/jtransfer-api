@@ -38,11 +38,11 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
     // Get all files for this transfer
     const files = await getFilesByTransferId(transfer.id);
 
-    // If password protected, return limited metadata. The encrypted title
-    // is safe to return pre-verify: the ciphertext is keyed under the
-    // (still-wrapped) fragment key, so the recipient can't decrypt it
-    // until they've entered the password and the fragment-key has been
-    // unwrapped (ADR-0005).
+    // If password protected, return limited metadata. The encrypted
+    // title is safe to return pre-verify: the ciphertext is keyed
+    // under the (still-wrapped) fragment key, so the recipient
+    // can't decrypt it until they've entered the password and the
+    // fragment key has been unwrapped.
     if (transfer.passwordHash) {
       return {
         id: transfer.id,
@@ -113,9 +113,9 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
     const files = await getFilesByTransferId(transfer.id);
 
     // Issue a short-lived "password OK" token so subsequent
-    // /file/:id/url calls under this transfer don't need to re-verify the
-    // password. The token binds transferId + expiry under
-    // DOWNLOAD_TOKEN_SECRET (audit doc 25 §A.4).
+    // /file/:id/url calls under this transfer don't need to
+    // re-verify the password. The token binds transferId + expiry
+    // under DOWNLOAD_TOKEN_SECRET.
     const accessToken = await issueDownloadToken(transfer.id);
 
     return {
@@ -175,11 +175,12 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       return { error: 'File not found' };
     }
 
-    // Password gate (audit doc 25 §A.4). Only enforced for *live* transfers,
-    // so an expired/deleted/not-yet-completed transfer always 404s instead
-    // of leaking "this transfer was once password-protected" via a 401.
-    // The token binds transferId under DOWNLOAD_TOKEN_SECRET, so it cannot
-    // be replayed across transfers.
+    // Password gate. Only enforced for *live* transfers, so an
+    // expired/deleted/not-yet-completed transfer always 404s
+    // instead of leaking "this transfer was once
+    // password-protected" via a 401. The token binds transferId
+    // under DOWNLOAD_TOKEN_SECRET, so it cannot be replayed across
+    // transfers.
     const transferRow = await getTransferById(file.transferId);
     const isLiveProtected =
       transferRow !== null &&
@@ -194,11 +195,12 @@ export const downloadRoutes = new Elysia({ prefix: '/api/download' })
       }
     }
 
-    // Atomic claim: gate-check + increment in one UPDATE so a burst of
-    // concurrent downloads on a transfer at (max_downloads - 1) can't all
-    // pass a stale read and overshoot the cap (audit doc 25 §B.1). A null
-    // return collapses "expired / deleted / not completed / cap exhausted"
-    // into the same 404 — the existence oracle policy from doc 20 §4.
+    // Atomic claim: gate-check + increment in one UPDATE so a
+    // burst of concurrent downloads on a transfer at
+    // (max_downloads - 1) can't all pass a stale read and overshoot
+    // the cap. A null return collapses "expired / deleted / not
+    // completed / cap exhausted" into the same 404 — existence
+    // oracle policy.
     const claimed = await claimDownloadSlot(file.transferId);
     if (claimed === null) {
       set.status = 404;

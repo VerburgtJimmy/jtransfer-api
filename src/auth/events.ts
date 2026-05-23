@@ -1,10 +1,10 @@
-// Auth-event audit log writer. See docs/audit/18-auth-security-baseline.md §8.
-// 30-day retention enforced by a separate purge job (D-081).
+// Auth-event audit log writer. 30-day retention enforced by a
+// separate purge job.
 //
-// IP minimization (audit doc 19, ADR-0002): no raw IP is persisted. Each
-// event row stores country + ASN + HMAC-correlator keyed under the
-// active `auth_events` salt (24h rotation, 30d retention). When the
-// salt is purged, the correlator becomes permanently un-correlatable.
+// No raw IP is persisted. Each event row stores country + ASN + an
+// HMAC correlator keyed under the active `auth_events` salt (24h
+// rotation, 30d retention). When the salt is purged, the correlator
+// becomes permanently un-correlatable.
 
 import { db } from "../db";
 import { authEvents } from "../db/schema";

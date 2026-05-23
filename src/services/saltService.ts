@@ -1,5 +1,4 @@
 // Rotating per-purpose HMAC salts for IP correlation.
-// See audit doc 19 §4.3, ADR-0002, D-082.
 //
 // Two namespaces with intentionally different cadences:
 //

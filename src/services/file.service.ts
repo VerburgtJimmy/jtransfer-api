@@ -41,13 +41,14 @@ export async function createTransfer(
   return transfer;
 }
 
-// Owner-scoped title update. Returns true on success, false when the
-// transfer doesn't exist, isn't owned by `userId`, or is soft-deleted —
-// the route layer collapses all three to a 404 to avoid an existence
-// oracle (docs/audit/20-transfer-ownership.md §4).
+// Owner-scoped title update. Returns true on success, false when
+// the transfer doesn't exist, isn't owned by `userId`, or is
+// soft-deleted — the route layer collapses all three to a 404 to
+// avoid an existence oracle.
 //
-// Pass `null` for both fields to clear the title. The both-or-neither
-// invariant is enforced at the route layer before this is called.
+// Pass `null` for both fields to clear the title. The
+// both-or-neither invariant is enforced at the route layer before
+// this is called.
 export async function setOwnedTransferTitle(
   userId: string,
   transferId: string,
@@ -136,11 +137,12 @@ export async function getCompletedValidTransfer(id: string): Promise<Transfer | 
   return transfer;
 }
 
-// Atomic "may I download?" gate. Increments download_count by 1 *only* when
-// the transfer is still live, completed, not soft-deleted, and either has no
-// download cap or is strictly below it — all in a single UPDATE so two
-// concurrent calls cannot both pass a stale read of the count and overshoot
-// `max_downloads` (audit doc 25 §B.1).
+// Atomic "may I download?" gate. Increments download_count by 1
+// *only* when the transfer is still live, completed, not
+// soft-deleted, and either has no download cap or is strictly
+// below it — all in a single UPDATE so two concurrent calls cannot
+// both pass a stale read of the count and overshoot
+// `max_downloads`.
 //
 // Returns the new download_count on success, or null when the transfer is no
 // longer downloadable for any of the reasons above. Callers cannot
@@ -244,10 +246,10 @@ export async function markTransferAsDeleted(id: string): Promise<void> {
     .where(eq(transfers.id, id));
 }
 
-// Owner-scoped list with per-row file aggregates. Cursor is the createdAt of
-// the last row from the previous page (ISO string). See docs/audit/20 §5.
-// `wrappedKey` is base64url-encoded when present and NULL when the row is
-// unvaulted. See docs/adr/0004-vault-redesign-password-and-recovery-phrase.md.
+// Owner-scoped list with per-row file aggregates. Cursor is the
+// createdAt of the last row from the previous page (ISO string).
+// `wrappedKey` is base64url-encoded when present and NULL when the
+// row is unvaulted.
 export interface OwnedTransferSummary {
   id: string;
   createdAt: Date;
@@ -263,8 +265,6 @@ export interface OwnedTransferSummary {
 }
 
 function bytesToBase64Url(bytes: Uint8Array): string {
-  // Node/Bun Buffer round-trips Uint8Array losslessly. base64url is the
-  // wire format for vault blobs per ADR-0004.
   return Buffer.from(bytes).toString('base64url');
 }
 
@@ -318,10 +318,10 @@ export async function listTransfersForUser(
   }));
 }
 
-// Per-file metadata for an owned transfer. Used by the dashboard to decrypt
-// filenames after unwrapping K_transfer. Returns null when the transfer
-// does not exist or is not owned by `userId`; collapses both to a 404
-// at the route layer (D-088). See docs/audit/28 §3.
+// Per-file metadata for an owned transfer. Used by the dashboard
+// to decrypt filenames after unwrapping K_transfer. Returns null
+// when the transfer does not exist or is not owned by `userId`;
+// the route layer collapses both to a 404.
 export interface OwnedTransferFileMetadata {
   id: string;
   encryptedName: string;
@@ -364,8 +364,8 @@ export async function getFileMetadataForOwnedTransfer(
   }));
 }
 
-// Returns true when a row was soft-deleted, false when not found or not owned
-// (caller maps both to 404 per docs/audit/20 §4 to avoid an existence oracle).
+// Returns true when a row was soft-deleted, false when not found
+// or not owned (caller maps both to 404 to avoid an existence oracle).
 export async function softDeleteOwnedTransfer(userId: string, transferId: string): Promise<boolean> {
   const updated = await db
     .update(transfers)
@@ -470,9 +470,9 @@ export async function getFileById(id: string): Promise<File | null> {
 }
 
 // Hard-delete a single file row by ID. Used by the multipart abort
-// path (ADR-0009) — the file never completed so there's no risk of
-// dangling Transfer state, and we want the row gone (not just
-// soft-deleted) so it doesn't appear in any per-transfer queries.
+// path — the file never completed so there's no risk of dangling
+// transfer state, and the row should be gone (not soft-deleted) so
+// it doesn't appear in any per-transfer queries.
 export async function deleteFileById(id: string): Promise<void> {
   await db.delete(files).where(eq(files.id, id));
 }

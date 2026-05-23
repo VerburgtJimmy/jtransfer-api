@@ -1,5 +1,5 @@
-// WebAuthn / passkey endpoints. Passkeys are a login factor only — see
-// ADR-0004 for why they no longer participate in vault key derivation.
+// WebAuthn / passkey endpoints. Passkeys are a login factor only;
+// they don't participate in vault key derivation.
 //
 // Surface:
 //   POST   /api/auth/passkey/register/begin      (auth required)

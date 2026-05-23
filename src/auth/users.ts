@@ -1,8 +1,7 @@
 // User lookup + silent auto-create for the magic-link flow.
-// See docs/audit/18-auth-security-baseline.md §5 + D-078.
 //
-// Account erasure (eraseAccount) implements docs/audit/23-right-to-erasure.md.
-// Account export (buildAccountExport) implements docs/audit/24-right-to-portability.md.
+// Also implements the GDPR account erasure (Article 17) and account
+// export (Article 20) flows for the authenticated user.
 
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -60,10 +59,9 @@ interface EraseAccountInput {
   userAgent: string | null;
 }
 
-// Permanent account erasure. See docs/audit/23-right-to-erasure.md §6 for the
-// cascade order. Owned transfers + R2 objects are purged first (best-effort,
-// outside the DB transaction); then a single DB transaction handles all
-// row-level operations atomically.
+// Permanent account erasure. Owned transfers + R2 objects are
+// purged first (best-effort, outside the DB transaction); then a
+// single DB transaction handles all row-level operations atomically.
 export async function eraseAccount({ user, ipContext, userAgent }: EraseAccountInput): Promise<void> {
   // Step 2: purge owned, not-already-soft-deleted transfers.
   const owned = await db
@@ -96,9 +94,9 @@ export async function eraseAccount({ user, ipContext, userAgent }: EraseAccountI
       .set({ email: null })
       .where(eq(authEvents.userId, user.id));
 
-    // Step 7: write account_deleted audit row inside the same transaction.
-    // Per audit doc 19 §2 we no longer store raw IP — only the country/ASN
-    // and an HMAC correlator keyed under the active auth_events salt.
+    // Step 7: write account_deleted audit row inside the same
+    // transaction. No raw IP — only country/ASN and an HMAC
+    // correlator keyed under the active auth_events salt.
     const salt = await getActiveSalt("auth_events");
     const correlator = ipContext.hmac(salt.secret);
     await tx.insert(authEvents).values({
@@ -117,16 +115,15 @@ export async function eraseAccount({ user, ipContext, userAgent }: EraseAccountI
   });
 }
 
-// GDPR Article 20 export bundle. See docs/audit/24-right-to-portability.md.
-// Positive-list scope per D-094: no token hashes, no password hashes, no
-// R2 storage keys. Encrypted filename material is included so the user can
-// reconstruct filenames with the key from their share link.
+// GDPR Article 20 export bundle. Positive-list scope: no token
+// hashes, no password hashes, no storage keys. Encrypted filename
+// material is included so the user can reconstruct filenames with
+// the key from their share link.
 //
-// Per audit doc 19 / ADR-0002 (IP minimization) raw IPs are no longer
-// stored, so they no longer appear in the export. Sessions carry the
-// country + ASN we derived at create time; magic-link rows carry no
-// network signal at all; auth_events carry country + ASN (the HMAC
-// correlator is internal-only and never surfaced).
+// Raw IPs are never stored, so they don't appear here. Sessions
+// carry the country + ASN derived at create time; magic-link rows
+// carry no network signal at all; auth_events carry country + ASN
+// (the HMAC correlator is internal-only and never surfaced).
 export interface AccountExport {
   exportFormatVersion: 1;
   exportedAt: string;

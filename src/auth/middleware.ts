@@ -1,11 +1,11 @@
-// Elysia plugin that derives the current user from the session cookie on every
-// request. Routes can read `me` from context; null when unauthenticated.
+// Elysia plugin that derives the current user from the session
+// cookie on every request. Routes can read `me` from context; null
+// when unauthenticated.
 //
-// Origin-header check on state-changing methods provides CSRF defence
-// alongside SameSite=Lax (per audit doc 18 §6, ASVS 4.2.2).
-//
-// Also fires the session-anomaly check (audit doc 19 §2.2 / D-082) once
-// `me` is resolved. Log-only — see `sessionAnomaly.ts`.
+// Origin-header check on state-changing methods provides CSRF
+// defence alongside SameSite=Lax (OWASP ASVS 4.2.2). Also fires the
+// session-anomaly check once `me` is resolved — see
+// `sessionAnomaly.ts`.
 
 import { Elysia } from "elysia";
 import { eq } from "drizzle-orm";
@@ -30,9 +30,9 @@ function isAllowedOrigin(origin: string | null): boolean {
 
 export const authPlugin = new Elysia({ name: "auth" })
   .derive({ as: "scoped" }, async ({ cookie, request }) => {
-    // Origin check on state-changing requests. Read-only requests are
-    // protected by the same-origin policy; the magic-link verify is a GET
-    // whose token entropy is the auth (audit doc 18 §6).
+    // Origin check on state-changing requests. Read-only requests
+    // are protected by the same-origin policy; the magic-link
+    // verify is a GET whose token entropy is the auth.
     if (STATE_CHANGING_METHODS.has(request.method)) {
       const origin = request.headers.get("origin");
       if (origin && !isAllowedOrigin(origin)) {

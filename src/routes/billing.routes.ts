@@ -1,18 +1,7 @@
-// Billing routes — Polar checkout, portal, and webhook receiver.
-//
-// Per ADR-0006 / ADR-0007 / ADR-0008:
-//
-//   - `POST /api/billing/checkout` (authed) — creates a Polar
-//     checkout session for the selected billing cycle, returns the
-//     hosted URL. Frontend redirects the user there.
-//   - `POST /api/billing/portal` (authed) — returns a Polar-hosted
-//     customer portal URL for managing payment method, cancelling,
-//     viewing invoices. Requires the user to already have a Polar
-//     Customer (set by the first successful webhook).
-//   - `POST /api/billing/webhook` (public, signature-verified) —
-//     consumes Polar's subscription lifecycle events, mirrors them
-//     to the local `subscriptions` table, and syncs `users.tier`.
-//     Audit-logged in `billing_events`.
+// Billing routes — Polar checkout, customer portal, and webhook
+// receiver. The webhook handler is the only thing that mutates
+// `subscriptions` or `users.tier`; the public-facing endpoints just
+// redirect the browser to Polar-hosted pages.
 
 import { Elysia, t } from "elysia";
 import { desc, eq } from "drizzle-orm";
@@ -27,19 +16,16 @@ import {
   WebhookVerificationError,
 } from "../services/polar.service";
 
-// Polar's subscription.status values that map to "user is currently Pro".
-// `canceled` is terminal (period ended after a cancel-at-period-end window,
-// or terminal failure after past_due retries). All others mean the user
-// should keep their Pro caps.
+// Polar `subscription.status` values that map to "user is currently
+// Pro". `canceled` is terminal; everything else keeps Pro caps.
 const PRO_STATUSES = new Set(["active", "past_due", "trialing"]);
 function tierFromStatus(status: string): "free" | "pro" {
   return PRO_STATUSES.has(status) ? "pro" : "free";
 }
 
-// Polar SubscriptionCustomer's externalId field carries the value we set
-// at checkout time (`externalCustomerId: user.id`). Every webhook event
-// for that subscription replays it back so we can match the event to a
-// JTransfer User row without a lookup table.
+// `externalId` is the user ID we set at checkout — every subsequent
+// webhook event replays it back, so we route inbound events to the
+// right user row without a lookup table.
 interface PolarSubscriptionData {
   id: string;
   status: string;
@@ -113,9 +99,8 @@ async function applySubscriptionState(data: PolarSubscriptionData): Promise<Hand
     });
   }
 
-  // Sync the user's tier snapshot + persist the customer ID on first
-  // sight. polarCustomerId is set-once — we never overwrite a non-null
-  // value because every webhook for this user replays the same ID.
+  // Sync the user's tier and persist the customer ID on first sight.
+  // polarCustomerId is set-once.
   await db
     .update(users)
     .set({
@@ -127,9 +112,7 @@ async function applySubscriptionState(data: PolarSubscriptionData): Promise<Hand
   return { ok: true, subscriptionId };
 }
 
-// Terminal cancel — either Polar exhausted retries after past_due, or
-// the period closed after a cancel-at-period-end window. Either way:
-// row is closed out, user drops to Free.
+// Terminal cancel — row is closed out, user drops to Free.
 async function applyTerminalCancel(data: PolarSubscriptionData): Promise<HandlerResult> {
   const externalId = data.customer.externalId;
   if (!externalId) {
@@ -143,8 +126,8 @@ async function applyTerminalCancel(data: PolarSubscriptionData): Promise<Handler
     .where(eq(subscriptions.polarSubscriptionId, data.id));
 
   if (!existing) {
-    // We never saw the create event. Insert a row in terminal state so
-    // the audit trail isn't a gap, then sync tier.
+    // Never saw the create event — insert a row in terminal state so
+    // the audit trail isn't a gap.
     const subscriptionId = nanoid();
     await db.insert(subscriptions).values({
       id: subscriptionId,
@@ -181,21 +164,16 @@ async function applyTerminalCancel(data: PolarSubscriptionData): Promise<Handler
 export const billingRoutes = new Elysia({ prefix: "/api/billing" })
   .use(authPlugin)
 
-  // Subscription summary for the authenticated user — drives the
-  // Subscription card on /dashboard/settings/account and gates the
-  // dashboard tier badge. Returns the live-or-most-recently-canceled
-  // subscription so the UI can render "Pro until {date}" after a
-  // cancel-scheduled state. `subscription` is null only for users
-  // who have never had a Subscription row (clean Free).
+  // Subscription summary for the authenticated user. Returns the
+  // live row when present, otherwise the most-recent terminal row
+  // so the UI can still surface "ended on {date}". `subscription`
+  // is null only for users who have never had a Subscription row.
   .get("/status", async ({ me, set }) => {
     if (!me) {
       set.status = 401;
       return { error: "Not authenticated" };
     }
 
-    // Prefer the live row when present; otherwise fall back to the
-    // most recent one so we can still surface "ended on {date}" for
-    // a user whose subscription closed terminally.
     const [live] = await db
       .select()
       .from(subscriptions)
@@ -259,27 +237,21 @@ export const billingRoutes = new Elysia({ prefix: "/api/billing" })
     }
   })
 
-  // Public webhook receiver. No auth — security is the HMAC signature
-  // verified inside `parseWebhook`. `parse: 'text'` forces Elysia to
-  // give us the body as a raw string regardless of Polar's
-  // Content-Type header, so the exact bytes Polar signed reach the
-  // verifier unaltered (the default JSON parser would re-serialise
-  // and break the signature).
+  // Public webhook receiver. Security is the HMAC signature verified
+  // inside `parseWebhook`. `parse: 'text'` is required because the
+  // raw bytes are what Polar signed — JSON-parsing would re-serialise
+  // and break verification.
   .post("/webhook", async ({ body, request, set }) => {
       const rawBody = typeof body === "string" ? body : "";
 
-      // Collect headers as a plain record — `parseWebhook` is case-
-      // insensitive per the standard-webhooks spec. Fetch normalises
-      // header names to lowercase.
+      // Fetch normalises header names to lowercase.
       const headers: Record<string, string> = {};
       request.headers.forEach((value, key) => {
         headers[key] = value;
       });
 
-      // Standard-webhooks puts the canonical event ID in the
-      // `webhook-id` header. Check presence BEFORE signature
-      // verification so a missing header returns a clear 400 rather
-      // than the verifier's generic "missing required headers" 401.
+      // Check webhook-id presence before signature verification so a
+      // missing header returns a clear 400 rather than 401.
       const polarEventId = headers["webhook-id"] ?? "";
       if (!polarEventId) {
         set.status = 400;
@@ -308,16 +280,14 @@ export const billingRoutes = new Elysia({ prefix: "/api/billing" })
           rawPayload: event as unknown as Record<string, unknown>,
         });
       } catch {
-        // UNIQUE violation on polar_event_id — we already processed
-        // this event. The original processing already updated the
-        // subscription row; nothing left to do.
+        // UNIQUE violation on polar_event_id = already processed.
+        // Return 200 so Polar stops retrying.
         console.warn("[billing] duplicate webhook delivery, skipping:", event.type);
         return { ok: true, deduplicated: true };
       }
 
-      // Route to the right handler. Unknown event types are logged
-      // (already in billing_events) and otherwise ignored so Polar
-      // doesn't retry them forever.
+      // Unknown event types are audited but otherwise ignored, so
+      // Polar doesn't retry them forever.
       let result: HandlerResult;
       try {
         switch (event.type) {

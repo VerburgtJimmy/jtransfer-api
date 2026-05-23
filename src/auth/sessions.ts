@@ -1,11 +1,11 @@
-// Session lifecycle: create, validate (with sliding-idle refresh), revoke.
-// See docs/audit/18-auth-security-baseline.md §3.
+// Session lifecycle: create, validate (with sliding-idle refresh),
+// revoke.
 //
-// IP minimization (audit doc 19, ADR-0002): each session carries a
-// per-session 32-byte `correlationSecret` minted at create time. The
-// stored `ipHmac` is HMAC-SHA-256(correlationSecret, raw_ip). On revoke
-// or expiry the secret is wiped, after which the stored ipHmac is
-// permanently un-correlatable to any IP.
+// IP minimization: each session carries a per-session 32-byte
+// `correlationSecret` minted at create time. The stored `ipHmac` is
+// HMAC-SHA-256(correlationSecret, raw_ip). On revoke or expiry the
+// secret is wiped, after which the stored ipHmac is permanently
+// un-correlatable to any IP.
 
 import { randomBytes } from "node:crypto";
 import { and, eq, gt, isNull } from "drizzle-orm";
@@ -133,9 +133,9 @@ export async function validateSession(token: string): Promise<Session | null> {
 }
 
 export async function revokeSession(sessionId: string): Promise<void> {
-  // Wipe correlation_secret + ip_hmac at revoke time (audit doc 19 §2.2,
-  // ADR-0002). The row lingers ≤7d for audit visibility, but no derived
-  // IP signal survives beyond the revoke moment.
+  // Wipe correlation_secret + ip_hmac at revoke time. The row
+  // lingers ≤7d for audit visibility, but no derived IP signal
+  // survives beyond the revoke moment.
   await db
     .update(sessions)
     .set({ revokedAt: new Date(), correlationSecret: null, ipHmac: null })

@@ -45,8 +45,9 @@ export const env = {
   RATE_LIMIT_DAILY_DOWNLOADS: parseInt(getEnv("RATE_LIMIT_DAILY_DOWNLOADS", "200"), 10),
   RATE_LIMIT_MONTHLY_UPLOAD_GB: parseInt(getEnv("RATE_LIMIT_MONTHLY_UPLOAD_GB", "2"), 10) * GB,
 
-  // Auth — magic-link primary. See docs/audit/18-auth-security-baseline.md.
-  // APP_URL is the public frontend origin used to compose magic links.
+  // Auth — magic-link primary. APP_URL is the public frontend origin
+  // used to compose magic links and as the default base for WebAuthn
+  // RP origin and the Polar checkout success URL.
   APP_URL: getEnv("APP_URL", "http://localhost:5173"),
 
   // Scaleway Transactional Email — transactional only per ToS (no marketing).
@@ -59,8 +60,8 @@ export const env = {
   EMAIL_FROM_NAME: getEnv("EMAIL_FROM_NAME", "JTransfer"),
   EMAIL_REPLY_TO: process.env.EMAIL_REPLY_TO ?? "",
 
-  // Magic-link auth rate limits (per audit doc 18 §2). Configurable for
-  // operator tuning if abuse signals appear.
+  // Magic-link auth rate limits. Configurable for operator tuning if
+  // abuse signals appear.
   RATE_LIMIT_AUTH_REQUEST_PER_HOUR_PER_EMAIL: parseInt(
     getEnv("RATE_LIMIT_AUTH_REQUEST_PER_HOUR_PER_EMAIL", "5"),
     10,
@@ -74,22 +75,22 @@ export const env = {
     10,
   ),
 
-  // HMAC secret for the short-lived "password OK" download token issued by
-  // /api/download/transfer/:id/verify and required by /api/download/file/:id/url
-  // when the transfer is password-protected. See docs/audit/25-external-audit-findings.md
-  // §A.4. In production this must be set explicitly so the secret survives
-  // restarts (otherwise tokens issued before a restart would be invalidated).
-  // In dev/test, a per-process random value is fine.
+  // HMAC secret for the short-lived "password OK" download token
+  // issued by /api/download/transfer/:id/verify and required by
+  // /api/download/file/:id/url when the transfer is
+  // password-protected. In production this must be set explicitly
+  // so the secret survives restarts; in dev/test a per-process
+  // random value is fine.
   DOWNLOAD_TOKEN_SECRET: process.env.DOWNLOAD_TOKEN_SECRET ?? (IS_PRODUCTION ? "" : randomSecret()),
 
-  // WebAuthn / passkeys (audit doc 27 §3, D-108).
+  // WebAuthn / passkeys.
   //
-  // `WEBAUTHN_RP_ID` = the host without scheme or port (e.g. `jtransfer.com`).
-  // Browsers reject registrations where the RP ID is not a registrable suffix
-  // of the page origin, so the value must match the deployment domain.
-  // `WEBAUTHN_RP_ORIGIN` = the full origin sent in `expectedOrigin` on verify.
-  // Defaults derive from APP_URL so dev (`http://localhost:5173`) works
-  // without extra config. Both must be explicitly set in prod.
+  // `WEBAUTHN_RP_ID` = the host without scheme or port (e.g.
+  // `jtransfer.com`). Browsers reject registrations where the RP ID
+  // is not a registrable suffix of the page origin, so the value
+  // must match the deployment domain. `WEBAUTHN_RP_ORIGIN` = the
+  // full origin sent in `expectedOrigin` on verify. Defaults derive
+  // from APP_URL; both must be set explicitly in prod.
   WEBAUTHN_RP_ID:
     process.env.WEBAUTHN_RP_ID ??
     (() => {
@@ -102,18 +103,17 @@ export const env = {
   WEBAUTHN_RP_ORIGIN: process.env.WEBAUTHN_RP_ORIGIN ?? (process.env.APP_URL ?? "http://localhost:5173"),
   WEBAUTHN_RP_NAME: process.env.WEBAUTHN_RP_NAME ?? "JTransfer",
 
-  // IP minimization / GeoIP (audit doc 19, ADR-0002).
+  // IP minimization / GeoIP.
   //
-  // Raw client IPs are never stored. They are resolved to country + ASN
-  // (+ city for outbound email recognition copy) and HMAC'd with a
-  // rotating salt for correlation. Country/ASN come from Cloudflare
-  // `CF-IPCountry` / `CF-IPASN` when present; the MMDB files are the
-  // fallback when the API is hit directly (dev, smoke tests, future
-  // non-CF environments).
+  // Raw client IPs are never stored. They are resolved to country +
+  // ASN (+ city for outbound email recognition copy) and HMAC'd
+  // with a rotating salt for correlation. Country/ASN come from
+  // Cloudflare `CF-IPCountry` / `CF-IPASN` when present; the MMDB
+  // files are the fallback when the API is hit directly.
   //
-  // `MAXMIND_ACCOUNT_ID` + `MAXMIND_LICENSE_KEY` are only needed by the
-  // weekly refresh script (`infra/setup-geoip.sh`); the running API
-  // just reads the MMDB files from disk.
+  // `MAXMIND_ACCOUNT_ID` + `MAXMIND_LICENSE_KEY` are only needed by
+  // the weekly refresh script; the running API just reads the MMDB
+  // files from disk.
   MAXMIND_ACCOUNT_ID: process.env.MAXMIND_ACCOUNT_ID ?? "",
   MAXMIND_LICENSE_KEY: process.env.MAXMIND_LICENSE_KEY ?? "",
   GEOIP_DIR: getEnv("GEOIP_DIR", "/var/lib/geoip"),
@@ -128,15 +128,14 @@ export const env = {
   ENABLE_SESSION_ANOMALY_EMAIL:
     (process.env.ENABLE_SESSION_ANOMALY_EMAIL ?? "false") === "true",
 
-  // Polar — payment processor + Merchant of Record for Pro subscriptions
-  // (ADR-0007). Sandbox is used in dev and CI; production carries real
-  // money. Access token authenticates server-side API calls (creating
-  // checkouts, opening portal sessions). Webhook secret verifies the
-  // signature on inbound events. Product IDs map to the locked pricing
-  // (€5/mo, €50/yr — ADR-0006) and are configured in the Polar dashboard
-  // once and pasted here. The success URL is where the Polar-hosted
-  // checkout redirects after a completed purchase; the user lands back
-  // on the dashboard with a fresh tier the moment the webhook lands.
+  // Polar — payment processor + Merchant of Record for Pro
+  // subscriptions. Sandbox in dev and CI; production carries real
+  // money. The access token authenticates server-side API calls
+  // (create checkouts, open portal sessions); the webhook secret
+  // verifies signatures on inbound events. Product IDs are
+  // configured in the Polar dashboard once and pasted here. The
+  // success URL is where the Polar-hosted checkout redirects after
+  // a completed purchase.
   POLAR_SERVER: (process.env.POLAR_SERVER ?? "sandbox") as "sandbox" | "production",
   POLAR_ACCESS_TOKEN: process.env.POLAR_ACCESS_TOKEN ?? "",
   POLAR_WEBHOOK_SECRET: process.env.POLAR_WEBHOOK_SECRET ?? "",
@@ -164,9 +163,9 @@ if (IS_PRODUCTION) {
     );
   }
 
-  // CORS `*` + credentials reflects the request origin, making every cookied
-  // response readable cross-origin. Always a misconfiguration in prod.
-  // See docs/audit/25-external-audit-findings.md §B.3.
+  // CORS `*` + credentials reflects the request origin, making
+  // every cookied response readable cross-origin. Always a
+  // misconfiguration in prod.
   const corsOrigins = env.CORS_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean);
   if (corsOrigins.includes("*")) {
     throw new Error(
