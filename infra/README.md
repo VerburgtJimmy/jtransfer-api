@@ -7,13 +7,15 @@ reviewable, version-controlled, and reproducible after a server move.
 
 ```
 infra/
-├── backups/         Daily encrypted Postgres backups → Scaleway Object Storage
+├── geoip/           Weekly MaxMind GeoLite2 MMDB refresh (country + ASN + city)
 ├── nginx/           Security and routing snippets to include from Ploi vhosts
 └── systemd/         Hardening drop-in for the API unit
 ```
 
-The backup setup has its own walkthrough at `backups/README.md`. The rest of
-this doc covers the nginx and systemd pieces.
+Postgres backups used to live here as a self-managed `pg_dump` + age + rclone
+pipeline targeting Scaleway Object Storage. That layer was removed when the
+database moved to Scaleway Managed PostgreSQL, which provides automated
+backups and point-in-time recovery as part of the service.
 
 ## nginx — security headers, restart tolerances, /d/* robots
 
