@@ -17,6 +17,7 @@ import { transfers } from "../../src/db/schema";
 import { createTransfer } from "../../src/services/file.service";
 import { authedRequest, createAuthedUser } from "../helpers/auth";
 import { ensureMigrations, resetDb } from "../helpers/db";
+import { resetRateLimits } from "../../src/services/ratelimit.service";
 
 const APP_URL = process.env.APP_URL!;
 const ORIGIN_HEADER = { Origin: APP_URL, "Content-Type": "application/json" };
@@ -30,6 +31,10 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await resetDb();
+  // Process-global rate-limit state survives resetDb; clear it so the
+  // anonymous create-transfer cases here aren't pre-empted by a 429 from
+  // the shared per-IP daily bucket.
+  await resetRateLimits();
 });
 
 afterAll(async () => {

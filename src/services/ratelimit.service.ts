@@ -103,6 +103,22 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+/**
+ * Drop all rate-limit + volume-counter state. Intended for test
+ * isolation: the in-memory store is process-global and survives
+ * `resetDb()`, so without this every test shares one anonymous
+ * per-IP bucket and the low caps trip across the suite. Clears the
+ * in-memory maps always; flushes Redis only outside production (so a
+ * misconfigured prod runner can never wipe a live limiter store).
+ */
+export async function resetRateLimits(): Promise<void> {
+  memoryLimits.clear();
+  memoryCounters.clear();
+  if (redis && redisAvailable && !env.IS_PRODUCTION) {
+    await redis.flushdb();
+  }
+}
+
 interface RateLimitConfig {
   /** Unique prefix for this limiter (e.g., 'upload', 'download', 'password') */
   prefix: string;
