@@ -18,7 +18,7 @@ if (!testDbUrl) {
   throw new Error(
     "TEST_DATABASE_URL must be set to run the test suite. " +
       "Point it at a disposable Postgres database (NOT the dev DB). " +
-      "Example: TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/jtransfer_test bun test",
+      "Example: TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/tessil_test bun test",
   );
 }
 if (testDbUrl === process.env.DATABASE_URL) {

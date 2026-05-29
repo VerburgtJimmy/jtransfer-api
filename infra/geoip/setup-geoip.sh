@@ -8,7 +8,7 @@
 # lazily when the file mtime changes (see src/utils/ipContext.ts), so a
 # successful refresh is picked up on the next IP-context resolution.
 #
-# Required environment (typically /etc/jtransfer/geoip.env):
+# Required environment (typically /etc/tessil/geoip.env):
 #   MAXMIND_ACCOUNT_ID
 #   MAXMIND_LICENSE_KEY
 #   GEOIP_DIR                  # default /var/lib/geoip

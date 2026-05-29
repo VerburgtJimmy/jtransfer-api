@@ -68,7 +68,7 @@ async function seedFile(transferId: string, size = 1024) {
 
 describe("GET /api/me/export — happy path", () => {
   it("returns a JSON attachment with the documented shape and excludes credential surrogates", async () => {
-    const { user, cookie } = await createAuthedUser("export-me@jtransfer.test");
+    const { user, cookie } = await createAuthedUser("export-me@tessil.test");
 
     // Seed a richer fixture: a second session, a magic link, an auth event,
     // and an owned transfer with two files (one soft-deletable scenario).
@@ -91,7 +91,7 @@ describe("GET /api/me/export — happy path", () => {
     expect(res.headers.get("content-type") ?? "").toContain("application/json");
     const disposition = res.headers.get("content-disposition") ?? "";
     expect(disposition).toContain("attachment");
-    expect(disposition).toContain(`filename="jtransfer-export-${user.id}-`);
+    expect(disposition).toContain(`filename="tessil-export-${user.id}-`);
     expect(disposition).toContain(".json");
     expect(res.headers.get("cache-control") ?? "").toContain("no-store");
     expect(res.headers.get("pragma") ?? "").toContain("no-cache");
@@ -182,8 +182,8 @@ describe("GET /api/me/export — anonymous transfers are excluded", () => {
 
 describe("GET /api/me/export — other users' transfers are excluded", () => {
   it("only returns transfers owned by the calling user", async () => {
-    const userA = await createAuthedUser("a@jtransfer.test");
-    const userB = await createAuthedUser("b@jtransfer.test");
+    const userA = await createAuthedUser("a@tessil.test");
+    const userB = await createAuthedUser("b@tessil.test");
 
     const transferB = await createTransfer(1, undefined, undefined, userB.user.id);
     const transferA = await createTransfer(1, undefined, undefined, userA.user.id);

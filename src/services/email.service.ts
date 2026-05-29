@@ -44,13 +44,13 @@ function isConfigured(): boolean {
 }
 
 function buildMagicLinkSubject(): string {
-  return "Your JTransfer sign-in link";
+  return "Your Tessil sign-in link";
 }
 
 function buildMagicLinkText({ link, expiresAt, ipContext, userAgent }: SendMagicLinkInput): string {
   const expiresIn = Math.max(1, Math.round((expiresAt.getTime() - Date.now()) / 60000));
   return [
-    "Sign in to JTransfer",
+    "Sign in to Tessil",
     "",
     "Click the link below to sign in. It expires in " +
       expiresIn +
@@ -67,11 +67,11 @@ function buildMagicLinkText({ link, expiresAt, ipContext, userAgent }: SendMagic
     `  Browser: ${userAgent ?? "unknown"}`,
     "",
     "We show approximate location and network rather than your IP address.",
-    "JTransfer does not store the IP itself.",
+    "Tessil does not store the IP itself.",
     "",
     "If you didn't request this, ignore this email — no account changes were made.",
     "",
-    "— JTransfer",
+    "— Tessil",
   ].join("\n");
 }
 
@@ -80,11 +80,11 @@ function buildMagicLinkHtml(input: SendMagicLinkInput): string {
   // Minimal inline-styled HTML — no tracking pixels, no remote assets.
   return [
     "<!doctype html>",
-    '<html lang="en"><head><meta charset="utf-8"><title>Sign in to JTransfer</title></head>',
+    '<html lang="en"><head><meta charset="utf-8"><title>Sign in to Tessil</title></head>',
     '<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5;color:#111;max-width:560px;margin:24px auto;padding:0 16px;">',
-    '  <h1 style="font-size:20px;margin:0 0 16px;">Sign in to JTransfer</h1>',
+    '  <h1 style="font-size:20px;margin:0 0 16px;">Sign in to Tessil</h1>',
     `  <p>Click the button below to sign in. The link expires in <strong>${expiresIn} minutes</strong> and can only be used once.</p>`,
-    `  <p style="margin:24px 0;"><a href="${escapeHtml(input.link)}" style="display:inline-block;padding:12px 20px;background:#111;color:#fff;text-decoration:none;border-radius:8px;">Sign in to JTransfer</a></p>`,
+    `  <p style="margin:24px 0;"><a href="${escapeHtml(input.link)}" style="display:inline-block;padding:12px 20px;background:#111;color:#fff;text-decoration:none;border-radius:8px;">Sign in to Tessil</a></p>`,
     `  <p style="font-size:13px;color:#555;">Or paste this URL into your browser:<br><code style="word-break:break-all;">${escapeHtml(input.link)}</code></p>`,
     '  <p style="font-size:13px;color:#555;">Opening this link on a different device than the one you started signing in on will show you a short code to type back into your original device — no sign-in happens on the wrong device.</p>',
     '  <hr style="border:none;border-top:1px solid #eee;margin:24px 0;">',
@@ -93,7 +93,7 @@ function buildMagicLinkHtml(input: SendMagicLinkInput): string {
       " &middot; Browser: " +
       escapeHtml(input.userAgent ?? "unknown") +
       "</p>",
-    '  <p style="font-size:12px;color:#666;">We show approximate location and network rather than your IP address. JTransfer does not store the IP itself.</p>',
+    '  <p style="font-size:12px;color:#666;">We show approximate location and network rather than your IP address. Tessil does not store the IP itself.</p>',
     '  <p style="font-size:12px;color:#666;">If you didn\'t request this, ignore this email — no account changes were made.</p>',
     "</body></html>",
   ].join("\n");
@@ -113,12 +113,12 @@ interface SendAccountDeletedInput {
 }
 
 function buildAccountDeletedSubject(): string {
-  return "Your JTransfer account was deleted";
+  return "Your Tessil account was deleted";
 }
 
 function buildAccountDeletedText({ to }: SendAccountDeletedInput): string {
   return [
-    "Your JTransfer account and all associated transfers were permanently deleted just now.",
+    "Your Tessil account and all associated transfers were permanently deleted just now.",
     "",
     "If you did this, no further action is needed. If you did not request this deletion, your account may have been accessed by someone else — we recommend rotating the credentials on the email address used to sign in (" +
       to +
@@ -126,17 +126,17 @@ function buildAccountDeletedText({ to }: SendAccountDeletedInput): string {
     "",
     "We don't retain copies. The account and its files cannot be restored.",
     "",
-    "— JTransfer",
+    "— Tessil",
   ].join("\n");
 }
 
 function buildAccountDeletedHtml({ to }: SendAccountDeletedInput): string {
   return [
     "<!doctype html>",
-    '<html lang="en"><head><meta charset="utf-8"><title>Your JTransfer account was deleted</title></head>',
+    '<html lang="en"><head><meta charset="utf-8"><title>Your Tessil account was deleted</title></head>',
     '<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5;color:#111;max-width:560px;margin:24px auto;padding:0 16px;">',
-    '  <h1 style="font-size:20px;margin:0 0 16px;">Your JTransfer account was deleted</h1>',
-    "  <p>Your JTransfer account and all associated transfers were permanently deleted just now.</p>",
+    '  <h1 style="font-size:20px;margin:0 0 16px;">Your Tessil account was deleted</h1>',
+    "  <p>Your Tessil account and all associated transfers were permanently deleted just now.</p>",
     "  <p>If you did this, no further action is needed. If you did not request this deletion, your account may have been accessed by someone else — we recommend rotating the credentials on the email address used to sign in (<strong>" +
       escapeHtml(to) +
       "</strong>), and reviewing other services where you used the same address.</p>",
@@ -230,7 +230,7 @@ function formatAnomalyNetwork(
 }
 
 function buildSessionAnomalySubject(): string {
-  return "Heads up — your JTransfer session is being used from a new network";
+  return "Heads up — your Tessil session is being used from a new network";
 }
 
 function buildSessionAnomalyText(input: SendSessionAnomalyInput): string {
@@ -246,7 +246,7 @@ function buildSessionAnomalyText(input: SendSessionAnomalyInput): string {
   );
   const createdAt = input.sessionCreatedAt.toISOString().slice(0, 10);
   return [
-    "We noticed a change of network on one of your JTransfer sessions.",
+    "We noticed a change of network on one of your Tessil sessions.",
     "",
     `Your session previously seen from ${previous} is now being used from ${current}.`,
     "",
@@ -260,9 +260,9 @@ function buildSessionAnomalyText(input: SendSessionAnomalyInput): string {
     "you can ignore this email. We won't sign you out automatically.",
     "",
     "We show approximate country and network rather than your IP address.",
-    "JTransfer does not store the IP itself.",
+    "Tessil does not store the IP itself.",
     "",
-    "— JTransfer",
+    "— Tessil",
   ].join("\n");
 }
 
@@ -283,15 +283,15 @@ function buildSessionAnomalyHtml(input: SendSessionAnomalyInput): string {
     : `Affected session: signed in on ${createdAt}`;
   return [
     "<!doctype html>",
-    '<html lang="en"><head><meta charset="utf-8"><title>JTransfer session change</title></head>',
+    '<html lang="en"><head><meta charset="utf-8"><title>Tessil session change</title></head>',
     '<body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5;color:#111;max-width:560px;margin:24px auto;padding:0 16px;">',
-    '  <h1 style="font-size:20px;margin:0 0 16px;">A JTransfer session is on a new network</h1>',
+    '  <h1 style="font-size:20px;margin:0 0 16px;">A Tessil session is on a new network</h1>',
     `  <p>Your session previously seen from <strong>${escapeHtml(previous)}</strong> is now being used from <strong>${escapeHtml(current)}</strong>.</p>`,
     `  <p style="font-size:13px;color:#555;">${sessionLine}</p>`,
     `  <p style="margin:24px 0;"><a href="${escapeHtml(input.settingsUrl)}" style="display:inline-block;padding:12px 20px;background:#111;color:#fff;text-decoration:none;border-radius:8px;">Sign out everywhere</a></p>`,
     '  <p style="font-size:13px;color:#555;">If this was you (you\'re travelling, on a VPN, or switched networks), you can ignore this email. We won\'t sign you out automatically.</p>',
     '  <hr style="border:none;border-top:1px solid #eee;margin:24px 0;">',
-    '  <p style="font-size:12px;color:#666;">We show approximate country and network rather than your IP address. JTransfer does not store the IP itself.</p>',
+    '  <p style="font-size:12px;color:#666;">We show approximate country and network rather than your IP address. Tessil does not store the IP itself.</p>',
     "</body></html>",
   ].join("\n");
 }

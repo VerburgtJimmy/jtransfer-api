@@ -1,8 +1,8 @@
-# JTransfer API
+# Tessil API
 
-[![CI](https://github.com/VerburgtJimmy/jtransfer-api/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/VerburgtJimmy/jtransfer-api/actions/workflows/ci.yml)
+[![CI](https://github.com/tessil-app/tessil-api/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tessil-app/tessil-api/actions/workflows/ci.yml)
 
-Backend API for JTransfer - a secure, end-to-end encrypted file sharing service.
+Backend API for Tessil - a secure, end-to-end encrypted file sharing service.
 
 ## Status
 
@@ -38,13 +38,13 @@ Create a `.env` file in the root directory:
 
 ```env
 # Required - Database
-DATABASE_URL=postgresql://user:password@localhost:5432/jtransfer
+DATABASE_URL=postgresql://user:password@localhost:5432/tessil
 
 # Required - Cloudflare R2 (object storage)
 R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
-R2_BUCKET_NAME=jtransfer
+R2_BUCKET_NAME=tessil
 
 # Optional - Rate limiting (falls back to in-memory if not set)
 REDIS_URL=redis://localhost:6379
@@ -86,10 +86,10 @@ Unit tests run in-process; integration tests require a disposable Postgres datab
 
 ```bash
 # One-time: create a dedicated test database
-createdb jtransferdb_test
+createdb tessildb_test
 
 # Run the full suite
-TEST_DATABASE_URL=postgresql://user:password@localhost:5432/jtransferdb_test bun test
+TEST_DATABASE_URL=postgresql://user:password@localhost:5432/tessildb_test bun test
 ```
 
 `TEST_DATABASE_URL` must differ from `DATABASE_URL` — the harness refuses to run otherwise. R2 calls are stubbed; no network I/O.
@@ -126,7 +126,7 @@ bun run auth:smoke        # in another
 
 ## Security Model
 
-JTransfer uses a dual-layer security approach:
+Tessil uses a dual-layer security approach:
 
 1. **End-to-end encryption**: Files are encrypted in the browser before upload. The encryption key is stored in the URL fragment (after `#`) and never sent to the server.
 
@@ -143,10 +143,10 @@ Copyright © 2024–2026 Jimmy Verburgt.
 Source code is licensed under the **GNU Affero General Public
 License v3.0** — see [LICENSE](LICENSE) for the full text. AGPL-3.0
 is a strong copyleft license: anyone who runs a modified version
-of JTransfer as a network service must make the source of their
+of Tessil as a network service must make the source of their
 modifications available to users of that service.
 
-The **JTransfer name, logo, and visual identity are trademarks**
+The **Tessil name, logo, and visual identity are trademarks**
 and are **not** licensed under AGPL — see [TRADEMARK.md](TRADEMARK.md)
 for what you can and cannot do with the brand. Forks must rename
 and re-brand before being run as a service.

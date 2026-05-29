@@ -33,9 +33,9 @@ Update". Save the account ID + license key to the password manager.
 ### 2. Install the env file
 
 ```bash
-sudo cp infra/geoip/geoip.env.example /etc/jtransfer/geoip.env
-sudo chmod 600 /etc/jtransfer/geoip.env
-sudo $EDITOR /etc/jtransfer/geoip.env
+sudo cp infra/geoip/geoip.env.example /etc/tessil/geoip.env
+sudo chmod 600 /etc/tessil/geoip.env
+sudo $EDITOR /etc/tessil/geoip.env
 ```
 
 Fill in `MAXMIND_ACCOUNT_ID` and `MAXMIND_LICENSE_KEY`.
@@ -43,25 +43,25 @@ Fill in `MAXMIND_ACCOUNT_ID` and `MAXMIND_LICENSE_KEY`.
 ### 3. Install the script
 
 ```bash
-sudo install -d -m 0755 /opt/jtransfer
-sudo install -m 0755 infra/geoip/setup-geoip.sh /opt/jtransfer/setup-geoip.sh
+sudo install -d -m 0755 /opt/tessil
+sudo install -m 0755 infra/geoip/setup-geoip.sh /opt/tessil/setup-geoip.sh
 sudo install -d -m 0755 /var/lib/geoip
 ```
 
 ### 4. Install the systemd service and timer
 
 ```bash
-sudo install -m 0644 infra/geoip/jtransfer-geoip-refresh.service /etc/systemd/system/
-sudo install -m 0644 infra/geoip/jtransfer-geoip-refresh.timer /etc/systemd/system/
+sudo install -m 0644 infra/geoip/tessil-geoip-refresh.service /etc/systemd/system/
+sudo install -m 0644 infra/geoip/tessil-geoip-refresh.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now jtransfer-geoip-refresh.timer
+sudo systemctl enable --now tessil-geoip-refresh.timer
 ```
 
 ### 5. Run once to seed the MMDB files
 
 ```bash
-sudo systemctl start jtransfer-geoip-refresh.service
-sudo journalctl -u jtransfer-geoip-refresh.service -n 50 --no-pager
+sudo systemctl start tessil-geoip-refresh.service
+sudo journalctl -u tessil-geoip-refresh.service -n 50 --no-pager
 ls -lh /var/lib/geoip/
 ```
 
@@ -81,8 +81,8 @@ You should see three files:
 - **Reader reopen:** the API stats each MMDB before lookup and reopens
   the reader if `mtime` changed. No restart is needed after a refresh.
 - **Failure visibility:** systemd exit code drives journald. Probe with
-  `systemctl is-failed jtransfer-geoip-refresh.service` or
-  `journalctl --identifier=jtransfer-geoip-refresh`.
+  `systemctl is-failed tessil-geoip-refresh.service` or
+  `journalctl --identifier=tessil-geoip-refresh`.
 - **License rotation:** see `docs/runbooks/secrets.md` →
   "MaxMind license key".
 

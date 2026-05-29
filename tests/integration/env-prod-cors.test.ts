@@ -55,7 +55,7 @@ describe("env.ts — production CORS guard", () => {
   it("throws when `*` appears alongside other origins in production", async () => {
     const { exitCode, stderr } = await bunImportEnv({
       NODE_ENV: "production",
-      CORS_ORIGINS: "https://jtransfer.app,*",
+      CORS_ORIGINS: "https://tessil.app,*",
     });
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain("CORS_ORIGINS must not contain `*`");
@@ -64,7 +64,7 @@ describe("env.ts — production CORS guard", () => {
   it("accepts explicit production origins", async () => {
     const { exitCode, stderr } = await bunImportEnv({
       NODE_ENV: "production",
-      CORS_ORIGINS: "https://jtransfer.app",
+      CORS_ORIGINS: "https://tessil.app",
     });
     expect(exitCode).toBe(0);
     expect(stderr).toBe("");

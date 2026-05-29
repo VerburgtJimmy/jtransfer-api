@@ -1,13 +1,13 @@
 [Unit]
-Description=JTransfer GeoLite2 MMDB refresh (Country + ASN + City)
+Description=Tessil GeoLite2 MMDB refresh (Country + ASN + City)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-EnvironmentFile=/etc/jtransfer/geoip.env
-ExecStart=/opt/jtransfer/setup-geoip.sh
-SyslogIdentifier=jtransfer-geoip-refresh
+EnvironmentFile=/etc/tessil/geoip.env
+ExecStart=/opt/tessil/setup-geoip.sh
+SyslogIdentifier=tessil-geoip-refresh
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

@@ -24,7 +24,7 @@ export async function createTestUser(email?: string): Promise<User> {
       id: nanoid(),
       // Production always stores normaliseEmail()-lowercased emails. Mirror
       // that invariant here so confirmation/lookup logic behaves the same.
-      email: (email ?? `test-${nanoid(8)}@jtransfer.test`).toLowerCase(),
+      email: (email ?? `test-${nanoid(8)}@tessil.test`).toLowerCase(),
     })
     .returning();
   if (!user) throw new Error("createTestUser: insert returned no row");

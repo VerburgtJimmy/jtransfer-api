@@ -69,7 +69,7 @@ afterAll(async () => {
 
 describe("detectAndReportSessionAnomaly", () => {
   it("logs session_anomaly when ip_hmac and country both change", async () => {
-    const user = await createTestUser("anomaly-1@jtransfer.test");
+    const user = await createTestUser("anomaly-1@tessil.test");
     const original = ipContextFor("203.0.113.1", "NL", 1136);
     const { session } = await createSession({
       userId: user.id,
@@ -90,7 +90,7 @@ describe("detectAndReportSessionAnomaly", () => {
   });
 
   it("logs session_anomaly when ip_hmac changes and only ASN changes", async () => {
-    const user = await createTestUser("anomaly-2@jtransfer.test");
+    const user = await createTestUser("anomaly-2@tessil.test");
     const original = ipContextFor("203.0.113.5", "NL", 1136);
     const { session } = await createSession({
       userId: user.id,
@@ -112,7 +112,7 @@ describe("detectAndReportSessionAnomaly", () => {
   });
 
   it("does NOT log when only the raw IP changes but country + ASN are identical", async () => {
-    const user = await createTestUser("anomaly-3@jtransfer.test");
+    const user = await createTestUser("anomaly-3@tessil.test");
     const original = ipContextFor("203.0.113.5", "NL", 1136);
     const { session } = await createSession({
       userId: user.id,
@@ -134,7 +134,7 @@ describe("detectAndReportSessionAnomaly", () => {
   });
 
   it("does NOT log on a no-op same-IP request (ip_hmac matches)", async () => {
-    const user = await createTestUser("anomaly-4@jtransfer.test");
+    const user = await createTestUser("anomaly-4@tessil.test");
     const ip = ipContextFor("203.0.113.5", "NL", 1136);
     const { session } = await createSession({
       userId: user.id,
@@ -154,7 +154,7 @@ describe("detectAndReportSessionAnomaly", () => {
   });
 
   it("dedups duplicate (country, ASN) transitions within the TTL", async () => {
-    const user = await createTestUser("anomaly-5@jtransfer.test");
+    const user = await createTestUser("anomaly-5@tessil.test");
     const original = ipContextFor("203.0.113.5", "NL", 1136);
     const { session } = await createSession({
       userId: user.id,
@@ -179,7 +179,7 @@ describe("detectAndReportSessionAnomaly", () => {
   });
 
   it("does not log when correlation_secret is missing on the session", async () => {
-    const user = await createTestUser("anomaly-6@jtransfer.test");
+    const user = await createTestUser("anomaly-6@tessil.test");
     const original = ipContextFor("203.0.113.5", "NL", 1136);
     const { session } = await createSession({
       userId: user.id,
@@ -204,7 +204,7 @@ describe("detectAndReportSessionAnomaly", () => {
   });
 
   it("respects ENABLE_SESSION_ANOMALY_DETECTION=false (no rows written)", async () => {
-    const user = await createTestUser("anomaly-7@jtransfer.test");
+    const user = await createTestUser("anomaly-7@tessil.test");
     const original = ipContextFor("203.0.113.5", "NL", 1136);
     const { session } = await createSession({
       userId: user.id,
@@ -296,7 +296,7 @@ describe("detectAndReportSessionAnomaly — email notification", () => {
   });
 
   it("sends one anomaly email on the first network change", async () => {
-    const user = await createTestUser("anomaly-email-1@jtransfer.test");
+    const user = await createTestUser("anomaly-email-1@tessil.test");
     const original = ipContextFor("203.0.113.10", "NL", 1136, "KPN");
     const { session } = await createSession({
       userId: user.id,
@@ -326,7 +326,7 @@ describe("detectAndReportSessionAnomaly — email notification", () => {
   });
 
   it("does not send a duplicate email within the dedup window", async () => {
-    const user = await createTestUser("anomaly-email-2@jtransfer.test");
+    const user = await createTestUser("anomaly-email-2@tessil.test");
     const original = ipContextFor("203.0.113.20", "NL", 1136, "KPN");
     const { session } = await createSession({
       userId: user.id,
@@ -350,7 +350,7 @@ describe("detectAndReportSessionAnomaly — email notification", () => {
   });
 
   it("does not send when the request is a same-network re-DHCP", async () => {
-    const user = await createTestUser("anomaly-email-3@jtransfer.test");
+    const user = await createTestUser("anomaly-email-3@tessil.test");
     const original = ipContextFor("203.0.113.30", "NL", 1136, "KPN");
     const { session } = await createSession({
       userId: user.id,
@@ -371,7 +371,7 @@ describe("detectAndReportSessionAnomaly — email notification", () => {
   });
 
   it("still writes the audit row when the email send throws", async () => {
-    const user = await createTestUser("anomaly-email-4@jtransfer.test");
+    const user = await createTestUser("anomaly-email-4@tessil.test");
     const original = ipContextFor("203.0.113.40", "NL", 1136, "KPN");
     const { session } = await createSession({
       userId: user.id,
@@ -397,7 +397,7 @@ describe("detectAndReportSessionAnomaly — email notification", () => {
   });
 
   it("includes a bare AS<int> in the email when asnOrg is missing", async () => {
-    const user = await createTestUser("anomaly-email-5@jtransfer.test");
+    const user = await createTestUser("anomaly-email-5@tessil.test");
     // Session created without an ASN org label — older sessions may have
     // NULL asn_org because the column is nullable.
     const original = ipContextFor("203.0.113.50", "NL", 1136, null);

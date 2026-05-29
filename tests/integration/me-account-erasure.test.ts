@@ -63,7 +63,7 @@ async function seedFile(transferId: string, size = 1024) {
 
 describe("DELETE /api/me — happy path", () => {
   it("erases the account end-to-end and writes the expected audit trail", async () => {
-    const { user, cookie } = await createAuthedUser("erase-me@jtransfer.test");
+    const { user, cookie } = await createAuthedUser("erase-me@tessil.test");
 
     // A pre-existing auth_events row (e.g. magic_link_consumed at signin) — we
     // want to verify its email column gets scrubbed during the cascade.
@@ -153,12 +153,12 @@ describe("DELETE /api/me — anonymous transfers are not affected", () => {
 
 describe("DELETE /api/me — confirmation gate (D-091)", () => {
   it("400 when confirmEmail does not match", async () => {
-    const { user, cookie } = await createAuthedUser("real@jtransfer.test");
+    const { user, cookie } = await createAuthedUser("real@tessil.test");
 
     const res = await app.handle(
       new Request(
         `${APP_URL}/api/me`,
-        deleteAccountInit({ confirmEmail: "wrong@jtransfer.test" }, cookie),
+        deleteAccountInit({ confirmEmail: "wrong@tessil.test" }, cookie),
       ),
     );
     expect(res.status).toBe(400);
@@ -169,12 +169,12 @@ describe("DELETE /api/me — confirmation gate (D-091)", () => {
   });
 
   it("accepts trimmed + uppercased email (case-insensitive normalisation)", async () => {
-    const { user, cookie } = await createAuthedUser("user@jtransfer.test");
+    const { user, cookie } = await createAuthedUser("user@tessil.test");
 
     const res = await app.handle(
       new Request(
         `${APP_URL}/api/me`,
-        deleteAccountInit({ confirmEmail: "  USER@JTRANSFER.TEST  " }, cookie),
+        deleteAccountInit({ confirmEmail: "  USER@TESSIL.TEST  " }, cookie),
       ),
     );
     expect(res.status).toBe(204);
