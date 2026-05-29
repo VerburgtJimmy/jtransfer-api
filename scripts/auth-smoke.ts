@@ -37,7 +37,7 @@ import {
 import { hashToken } from "../src/auth/tokens";
 
 const API_BASE = process.env.API_BASE ?? "http://localhost:3000";
-const TEST_EMAIL = `smoke-${Date.now()}@jtransfer.test`;
+const TEST_EMAIL = `smoke-${Date.now()}@tessil.test`;
 const SESSION_COOKIE_NAME = "__Host-session";
 
 // ANSI colors for terminal output.
@@ -108,7 +108,7 @@ function parseSetCookie(headerValue: string | null): { name: string; value: stri
 }
 
 async function main() {
-  console.log(`${C.bold}${C.cyan}JTransfer auth smoke test${C.reset}`);
+  console.log(`${C.bold}${C.cyan}Tessil auth smoke test${C.reset}`);
   console.log(`${C.dim}API:   ${API_BASE}${C.reset}`);
   console.log(`${C.dim}Email: ${TEST_EMAIL}${C.reset}\n`);
 
@@ -339,7 +339,7 @@ async function main() {
   const unknownTimes: number[] = [];
   for (let i = 0; i < N; i++) {
     knownTimes.push(await timeRequest(TEST_EMAIL));
-    unknownTimes.push(await timeRequest(`nope-${Date.now()}-${i}@jtransfer.test`));
+    unknownTimes.push(await timeRequest(`nope-${Date.now()}-${i}@tessil.test`));
   }
   const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
   const knownAvg = avg(knownTimes);

@@ -18,6 +18,7 @@ import { db } from "../../src/db";
 import { users } from "../../src/db/schema";
 import { authedRequest, createAuthedUser } from "../helpers/auth";
 import { ensureMigrations, resetDb } from "../helpers/db";
+import { resetRateLimits } from "../../src/services/ratelimit.service";
 
 const APP_URL = process.env.APP_URL!;
 const ORIGIN_HEADER = { Origin: APP_URL, "Content-Type": "application/json" };
@@ -31,6 +32,10 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await resetDb();
+  // The rate-limit store is process-global and survives resetDb, so
+  // anonymous requests across the suite share one per-IP bucket and trip
+  // the low anon daily cap (5). Clear it so each test starts fresh.
+  await resetRateLimits();
 });
 
 afterAll(async () => {
@@ -46,9 +51,21 @@ const GB = 1024 * 1024 * 1024;
 // ─── Expiry options per tier ─────────────────────────────────────────────────
 
 describe("create-transfer — tier-aware expiry options", () => {
-  it("anonymous request: 72h allowed", async () => {
+  it("anonymous request: 72h rejected (72h is Free-and-up)", async () => {
+    // Anonymous caps step below Free everywhere (file size, daily count),
+    // and expiry is no exception: anon tops out at 24h, 72h needs Free.
     const res = await app.handle(
       new Request(`${APP_URL}/api/upload/create-transfer`, jsonBody({ expiresInHours: 72 })),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code?: string; upgradeUrl?: string };
+    expect(body.code).toBe("expiry_not_allowed_for_tier");
+    expect(body.upgradeUrl).toBe("/pricing");
+  });
+
+  it("anonymous request: 24h allowed", async () => {
+    const res = await app.handle(
+      new Request(`${APP_URL}/api/upload/create-transfer`, jsonBody({ expiresInHours: 24 })),
     );
     expect(res.status).toBe(200);
   });

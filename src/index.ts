@@ -20,5 +20,5 @@ const app = createApp().listen({
 startCleanupJob();
 
 console.log(
-  `JTransfer API running at ${app.server?.hostname}:${app.server?.port}`,
+  `Tessil API running at ${app.server?.hostname}:${app.server?.port}`,
 );

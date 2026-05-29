@@ -57,7 +57,7 @@ export const env = {
   SCW_TEM_PROJECT_ID: process.env.SCW_TEM_PROJECT_ID ?? "",
   SCW_TEM_SECRET_KEY: process.env.SCW_TEM_SECRET_KEY ?? "",
   EMAIL_FROM: getEnv("EMAIL_FROM", "noreply@localhost"),
-  EMAIL_FROM_NAME: getEnv("EMAIL_FROM_NAME", "JTransfer"),
+  EMAIL_FROM_NAME: getEnv("EMAIL_FROM_NAME", "Tessil"),
   EMAIL_REPLY_TO: process.env.EMAIL_REPLY_TO ?? "",
 
   // Magic-link auth rate limits. Configurable for operator tuning if
@@ -86,7 +86,7 @@ export const env = {
   // WebAuthn / passkeys.
   //
   // `WEBAUTHN_RP_ID` = the host without scheme or port (e.g.
-  // `jtransfer.com`). Browsers reject registrations where the RP ID
+  // `tessil.com`). Browsers reject registrations where the RP ID
   // is not a registrable suffix of the page origin, so the value
   // must match the deployment domain. `WEBAUTHN_RP_ORIGIN` = the
   // full origin sent in `expectedOrigin` on verify. Defaults derive
@@ -101,7 +101,7 @@ export const env = {
       }
     })(),
   WEBAUTHN_RP_ORIGIN: process.env.WEBAUTHN_RP_ORIGIN ?? (process.env.APP_URL ?? "http://localhost:5173"),
-  WEBAUTHN_RP_NAME: process.env.WEBAUTHN_RP_NAME ?? "JTransfer",
+  WEBAUTHN_RP_NAME: process.env.WEBAUTHN_RP_NAME ?? "Tessil",
 
   // IP minimization / GeoIP.
   //
@@ -170,7 +170,7 @@ if (IS_PRODUCTION) {
   if (corsOrigins.includes("*")) {
     throw new Error(
       "Production env misconfigured: CORS_ORIGINS must not contain `*`. " +
-        "Set it to the explicit frontend origin(s), e.g. `https://jtransfer.app`.",
+        "Set it to the explicit frontend origin(s), e.g. `https://tessil.app`.",
     );
   }
 }

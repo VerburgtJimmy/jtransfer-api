@@ -295,7 +295,7 @@ export const meRoutes = new Elysia({ prefix: "/api/me" })
 
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       set.headers["Content-Type"] = "application/json; charset=utf-8";
-      set.headers["Content-Disposition"] = `attachment; filename="jtransfer-export-${me.id}-${stamp}.json"`;
+      set.headers["Content-Disposition"] = `attachment; filename="tessil-export-${me.id}-${stamp}.json"`;
       set.headers["Cache-Control"] = "no-store, max-age=0";
       set.headers["Pragma"] = "no-cache";
 
