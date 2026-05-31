@@ -94,10 +94,12 @@ export async function deleteFromR2(key: string): Promise<void> {
 // Each Part is signed with its own presigned URL so the browser uploads
 // directly to R2; the server never proxies the bytes.
 
-// S3 minimum part size is 5 MB except for the final part. 16 MB sits in
-// the sweet spot for amortising TCP slow-start without making individual
-// retries expensive.
-export const MULTIPART_PART_SIZE = 16 * 1024 * 1024;
+// S3 minimum part size is 5 MB except for the final part. 10 MB keeps per-part
+// retries cheap and limits how much data is in flight at once (part size ×
+// client parallelism), which reduces connection drops on big uploads — while
+// staying large enough that throughput on a fast network stays bandwidth-bound
+// rather than request-bound.
+export const MULTIPART_PART_SIZE = 10 * 1024 * 1024;
 
 export interface PresignedPartUrl {
   partNumber: number;
