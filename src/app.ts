@@ -20,6 +20,14 @@ export function createApp() {
     .filter(Boolean);
 
   return new Elysia()
+    // Every API response is dynamic and frequently sensitive (presigned R2
+    // download URLs, session/auth payloads, account exports). Mark them all
+    // non-cacheable so nothing — browser, proxy, or Cloudflare tiered cache
+    // (Smart Shield) — ever stores a response body. Set in onRequest so it
+    // also lands on error/404 responses, not just successful handlers.
+    .onRequest(({ set }) => {
+      set.headers["cache-control"] = "no-store";
+    })
     .use(
       cors({
         origin:
