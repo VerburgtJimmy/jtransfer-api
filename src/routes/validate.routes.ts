@@ -25,7 +25,10 @@ export const validateRoutes = new Elysia({ prefix: '/api' })
     const result = validateMagicBytes(bytes);
 
     if (!result.valid) {
-      set.status = 400;
+      // 200 + valid:false — validation completed and the answer is "not allowed",
+      // which is a normal result, not a malformed request. The client reads
+      // `reason` to show a real explanation; returning 400 here made the API
+      // client throw a bare "Request failed: 400" instead of the reason.
       return { valid: false, reason: result.reason };
     }
 
