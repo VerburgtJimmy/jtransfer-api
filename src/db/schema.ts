@@ -33,16 +33,29 @@ export const transfers = pgTable('transfers', {
   encryptedTitle: varchar('encrypted_title', { length: 1024 }),
   encryptedTitleIv: varchar('encrypted_title_iv', { length: 32 }),
 }, (table) => ({
+  // Dashboard list: filter by owner, ORDER BY created_at DESC. Postgres can
+  // scan the index backwards, so an ascending createdAt covers the sort.
   userIdIdx: index('transfers_user_id_idx')
-    .on(table.userId)
+    .on(table.userId, table.createdAt)
     .where(sql`${table.userId} IS NOT NULL`),
+  // The three cleanup sweeps. Each is a partial index matching its query
+  // predicate so the 15-minute job never full-scans.
+  expiresAtIdx: index('transfers_expires_at_idx')
+    .on(table.expiresAt)
+    .where(sql`${table.isDeleted} = false`),
+  abandonedIdx: index('transfers_abandoned_idx')
+    .on(table.createdAt)
+    .where(sql`${table.isDeleted} = false AND ${table.isCompleted} = false`),
+  softDeletedIdx: index('transfers_soft_deleted_idx')
+    .on(table.createdAt)
+    .where(sql`${table.isDeleted} = true`),
 }));
 
 export const files = pgTable('files', {
   id: varchar('id', { length: 21 }).primaryKey(), // nanoid
   transferId: varchar('transfer_id', { length: 21 }).notNull().references(() => transfers.id),
   r2Key: varchar('r2_key', { length: 255 }).notNull().unique(), // Storage path (column name kept for DB compatibility)
-  storageType: varchar('storage_type', { length: 10 }).default('local').notNull(), // Storage type (local only)
+  storageType: varchar('storage_type', { length: 10 }).default('r2').notNull(), // Storage backend; R2 is the only one.
   encryptedName: varchar('encrypted_name', { length: 1024 }).notNull(), // base64 encrypted filename (padded + AES-GCM tag)
   encryptedNameIv: varchar('encrypted_name_iv', { length: 32 }).notNull(),
   fileIv: varchar('file_iv', { length: 32 }).notNull(), // IV for file content encryption
@@ -50,7 +63,10 @@ export const files = pgTable('files', {
   mimeType: varchar('mime_type', { length: 127 }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   isDeleted: boolean('is_deleted').default(false).notNull()
-});
+}, (table) => ({
+  // Every per-transfer file lookup and the cascade in the cleanup path.
+  transferIdIdx: index('files_transfer_id_idx').on(table.transferId),
+}));
 
 // Immutable event log — no sensitive data, used for stats. Records survive transfer deletion.
 export const transferEvents = pgTable('transfer_events', {

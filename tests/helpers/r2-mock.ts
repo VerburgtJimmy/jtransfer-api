@@ -5,10 +5,10 @@
 // test file would leak a degraded stub into every later test file that shares
 // the same Bun process.
 
-// Multipart Part size matches the production constant (16 MB) so test
-// fixtures compute the same number of Parts the orchestrator would
-// see in real use.
-const MULTIPART_PART_SIZE = 16 * 1024 * 1024;
+// Must match MULTIPART_PART_SIZE in src/services/r2.service.ts, or fixtures
+// compute a different Part count than production. Was 16 MB here while prod
+// ran 10 MB (ADR-0009 still documents 16 MB and is now stale).
+const MULTIPART_PART_SIZE = 10 * 1024 * 1024;
 
 export function defaultR2Mock() {
   return {
