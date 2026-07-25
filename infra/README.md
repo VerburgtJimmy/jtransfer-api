@@ -43,11 +43,52 @@ server {
     include snippets/tessil-download-route.conf;   # robots-noindex on /d/*
 
     # ... rest of existing config ...
-    # The default `location / { try_files $uri /index.html; }` already serves
-    # /d/* via SPA fallback. No /d-specific location block is needed —
-    # download-route.conf adds the X-Robots-Tag conditionally at server scope.
+    # Two blocks, and both matter:
+
+    location = / {
+        try_files /index.html =404;
+    }
+
+    location / {
+        try_files $uri $uri.html /200.html /index.html;
+    }
 }
 ```
+
+**Why it is two blocks.** `$uri.html` serves the prerendered pages
+(`/compare/x` -> `compare/x.html`, `/security` -> `security.html`). `/200.html`
+is the SPA shell, and it is deliberately not `index.html`, because `index.html`
+is the prerendered homepage and adapter-static would overwrite it with the
+shell.
+
+That creates a trap for `/`. This vhost came from Ploi's PHP template and has no
+`$uri/` argument in `try_files`, so a request for `/` does not match `$uri` and
+falls straight through to the last argument. Without the exact-match block it
+would land on `/200.html` once that file exists and serve an empty shell as the
+homepage, silently undoing the prerendering. `location = /` takes priority over
+the prefix match and pins `/` to the real `index.html` in every build state.
+
+The trailing `/index.html` in the second block is what makes the line safe to
+apply before the frontend deploy: nginx tests every argument but the last as a
+file, so a build with no `200.html` yet falls through to `index.html` and
+behaves exactly as it did before.
+
+**Verify after any change**, because both failure modes here look like unrelated
+bugs and both happened on 2026-07-25:
+
+```bash
+for p in / /d/probe /security /compare/wetransfer-alternative /200.html; do
+  curl -s -o /dev/null -w "$p %{http_code} %{size_download}\n" "https://tessil.app$p"
+done
+```
+
+`/` must return the full prerendered homepage (over 20 KB), not a 3 KB shell.
+Pointing at a missing `/200.html` with no further fallback returns nginx **500**
+on `/` and on every `/d/` link. Dropping the fallback argument entirely returns
+**404** for the same paths while real files keep serving normally.
+
+`/d/*` is served by the SPA fallback, so no `/d`-specific location block is
+needed; `download-route.conf` adds the `X-Robots-Tag` at server scope.
 
 Edit `/etc/nginx/sites-available/api.tessil.app.conf` (API):
 
