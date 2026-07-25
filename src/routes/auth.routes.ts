@@ -117,7 +117,11 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
           email,
           userAgent,
         });
-        const link = `${env.APP_URL}/api/auth/verify?token=${encodeURIComponent(token)}`;
+        // Token rides in the fragment, not the query string, so it is never
+        // sent to the server (or the CDN edge) by the click itself. The SPA
+        // reads it and POSTs to /api/auth/verify. This also stops link-scanning
+        // bots from consuming the token by prefetching the URL.
+        const link = `${env.APP_URL}/signin/verify#token=${encodeURIComponent(token)}`;
 
         await sendMagicLink({ to: email, link, expiresAt, ipContext, userAgent });
 
@@ -320,6 +324,89 @@ export const authRoutes = new Elysia({ prefix: "/api/auth" })
     },
     {
       query: t.Object({
+        token: t.String({ maxLength: 256 }),
+      }),
+    },
+  )
+
+  // Same as GET /verify, but the token arrives in the body from the SPA after
+  // it reads the link fragment. Preferred path: the token never touches a URL
+  // the server or CDN sees, and prefetching bots cannot consume it.
+  .post(
+    "/verify",
+    async ({ body, request, cookie, ipContext, originRejected, set }) => {
+      if (originRejected) {
+        set.status = 403;
+        return { error: "Forbidden" };
+      }
+
+      const userAgent = request.headers.get("user-agent");
+
+      const verifyLimit = await checkIpRateLimit(ipContext, rateLimiters.authVerifyPerIp);
+      if (!verifyLimit.allowed) {
+        set.status = 429;
+        set.headers["Retry-After"] = String(verifyLimit.resetIn);
+        return { error: "Too many verification attempts. Try again later." };
+      }
+
+      const pendingCookieValue = cookie[PENDING_LOGIN_COOKIE_NAME]?.value;
+      const requestingPendingSessionId =
+        typeof pendingCookieValue === "string" && pendingCookieValue.length > 0
+          ? pendingCookieValue
+          : null;
+
+      const result = await claimMagicLinkOrIssueCode(body.token, requestingPendingSessionId);
+
+      if (!result.ok) {
+        // Generic, like the GET path: consumed/expired/not_found are all
+        // equivalent to the user and the difference must not leak.
+        set.status = 400;
+        return { error: "link-invalid" };
+      }
+
+      if (result.action === "code_issued") {
+        const expiresIn = Math.max(
+          0,
+          Math.floor((result.expiresAt.getTime() - Date.now()) / 1000),
+        );
+        return { action: "code_issued" as const, code: result.code, expiresIn };
+      }
+
+      const user = await findOrCreateUserByEmail(result.row.email);
+
+      const { session, token: sessionToken } = await createSession({
+        userId: user.id,
+        ipContext,
+        userAgent,
+      });
+
+      cookie[SESSION_COOKIE_NAME].set({
+        value: sessionToken,
+        ...SESSION_COOKIE_OPTIONS,
+        maxAge: Math.floor(SESSION_ABSOLUTE_MS / 1000),
+        expires: session.absoluteExpiresAt,
+      });
+      cookie[PENDING_LOGIN_COOKIE_NAME].remove();
+
+      await logAuthEvent({
+        eventType: "magic_link_consumed",
+        userId: user.id,
+        email: user.email,
+        ipContext,
+        userAgent,
+      });
+      await logAuthEvent({
+        eventType: "login_success",
+        userId: user.id,
+        email: user.email,
+        ipContext,
+        userAgent,
+      });
+
+      return { action: "signed_in" as const };
+    },
+    {
+      body: t.Object({
         token: t.String({ maxLength: 256 }),
       }),
     },
