@@ -93,13 +93,33 @@ export async function cleanupAuthArtefacts(): Promise<{ tokens: number; sessions
 
 export function startCleanupJob(): void {
   const INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+  // Re-entrancy guard: a sweep slower than the interval would otherwise stack.
+  let running = false;
 
   const runCleanup = async () => {
-    const expired = await cleanupExpiredTransfers();
-    const abandoned = await cleanupAbandonedTransfers();
-    const softDeleted = await cleanupSoftDeletedTransfers();
-    if (expired + abandoned + softDeleted > 0) {
-      console.log(`[cleanup] Deleted ${expired} expired, ${abandoned} abandoned, ${softDeleted} soft-deleted transfers`);
+    if (running) {
+      console.warn('[cleanup] Previous run still in progress, skipping this tick');
+      return;
+    }
+    running = true;
+    try {
+      await runCleanupOnce();
+    } finally {
+      running = false;
+    }
+  };
+
+  const runCleanupOnce = async () => {
+    // Each stage is isolated so one failure cannot skip the stages after it.
+    try {
+      const expired = await cleanupExpiredTransfers();
+      const abandoned = await cleanupAbandonedTransfers();
+      const softDeleted = await cleanupSoftDeletedTransfers();
+      if (expired + abandoned + softDeleted > 0) {
+        console.log(`[cleanup] Deleted ${expired} expired, ${abandoned} abandoned, ${softDeleted} soft-deleted transfers`);
+      }
+    } catch (err) {
+      console.error('[cleanup] Transfer sweep failed:', err);
     }
     try {
       const auth = await cleanupAuthArtefacts();

@@ -16,6 +16,9 @@ import { createApp } from "../../src/app";
 import { db } from "../../src/db";
 import { files, transfers } from "../../src/db/schema";
 import { createTransfer } from "../../src/services/file.service";
+// Resolves to the stub from tests/setup.ts, which mirrors the production value.
+// Deriving the assertions from it stops the test drifting from prod again.
+import { MULTIPART_PART_SIZE } from "../../src/services/r2.service";
 import { authedRequest, createAuthedUser } from "../helpers/auth";
 import { ensureMigrations, resetDb } from "../helpers/db";
 
@@ -75,7 +78,7 @@ describe("POST /api/upload/init-multipart", () => {
 
   it("file just over one Part: returns two Parts with correct sizes", async () => {
     const transfer = await createTransfer(1);
-    const size = 16 * 1024 * 1024 + 100; // 16 MB + 100 B
+    const size = MULTIPART_PART_SIZE + 100; // one full Part plus a remainder
     const res = await app.handle(
       new Request(`${APP_URL}/api/upload/init-multipart`, jsonBody({
         transferId: transfer.id,
@@ -88,7 +91,7 @@ describe("POST /api/upload/init-multipart", () => {
       partUrls: Array<{ partNumber: number; contentLength: number }>;
     };
     expect(body.partUrls).toHaveLength(2);
-    expect(body.partUrls[0]!.contentLength).toBe(16 * 1024 * 1024);
+    expect(body.partUrls[0]!.contentLength).toBe(MULTIPART_PART_SIZE);
     expect(body.partUrls[1]!.contentLength).toBe(100);
   });
 

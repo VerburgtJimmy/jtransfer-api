@@ -28,6 +28,34 @@ export function createApp() {
     .onRequest(({ set }) => {
       set.headers["cache-control"] = "no-store";
     })
+    // Every handler returns `{ error: string }` on failure, but anything that
+    // throws past a handler fell through to Elysia's own error shape, breaking
+    // that contract. Normalise it here, and log 5xx so unhandled exceptions
+    // are visible in journalctl (ADR-0012: no error tracker).
+    .onError(({ code, error, set, request, path }) => {
+      if (code === "NOT_FOUND") {
+        set.status = 404;
+        return { error: "Not found" };
+      }
+      if (code === "VALIDATION") {
+        set.status = 400;
+        return { error: "Invalid request" };
+      }
+      if (code === "PARSE") {
+        set.status = 400;
+        return { error: "Malformed request body" };
+      }
+
+      const message = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+      console.error(
+        `[error] ${code} ${request.method} ${path}: ${message}`,
+        stack ?? "",
+      );
+
+      set.status = 500;
+      return { error: "Internal server error" };
+    })
     .use(
       cors({
         origin:
@@ -36,7 +64,9 @@ export function createApp() {
             : corsOrigins,
         credentials: true,
         allowedHeaders: ["Content-Type", "X-Requested-With"],
-        methods: ["GET", "POST", "DELETE", "OPTIONS"],
+        // PUT serves /me/transfers/:id/title, PATCH serves /passkey/:id.
+        // Omitting them made cross-origin preflight reject both.
+        methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         exposeHeaders: ["Content-Length", "Content-Type"],
       }),
     )
